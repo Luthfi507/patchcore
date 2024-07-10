@@ -16,7 +16,10 @@ import patchcore.utils
 
 LOGGER = logging.getLogger(__name__)
 
-_DATASETS = {"mvtec": ["patchcore.datasets.mvtec", "MVTecDataset"]}
+_DATASETS = {"mvtec": ["patchcore.datasets.mvtec", "MVTecDataset"],
+             "inspl": ["patchcore.datasets.inspl", "InsplDataset"]}
+
+
 
 
 @click.group(chain=True)
@@ -50,7 +53,8 @@ def run(
 
     list_of_dataloaders = methods["get_dataloaders"](seed)
 
-    device = patchcore.utils.set_torch_device(gpu)
+    #empty list to set on cpu gpu to set on gpu
+    device = patchcore.utils.set_torch_device([])
     # Device context here is specifically set and used later
     # because there was GPU memory-bleeding which I could only fix with
     # context managers.

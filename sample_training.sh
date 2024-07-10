@@ -1,5 +1,8 @@
-datapath=/path/to/data/from/mvtec
-datasets=('bottle'  'cable'  'capsule'  'carpet'  'grid'  'hazelnut' 'leather'  'metal_nut'  'pill' 'screw' 'tile' 'toothbrush' 'transistor' 'wood' 'zipper')
+datapath=/mnt/d/unsupervised_anomaly_detection
+datasets=('damper-stockbridge'  'vari-grip'  'yoke'  'spacer'  'lightning-rod-shackle'  'plate'  'damper-preformed'  'polymer-insulator-lower-shackle'  'yoke-suspension'  
+'polymer-insulator-upper-shackle'  'polymer-insulator'  'glass-insulator'  
+'glass-insulator-big-shackle'  'glass-insulator-tower-shackle'  'polymer-insulator-tower-shackle'  
+'lightning-rod-suspension') 
 dataset_flags=($(for dataset in "${datasets[@]}"; do echo '-d '"${dataset}"; done))
 
 ############# Detection
