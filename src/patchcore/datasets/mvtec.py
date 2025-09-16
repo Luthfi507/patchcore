@@ -88,6 +88,9 @@ class MVTecDataset(torch.utils.data.Dataset):
 
         self.imagesize = (3, imagesize, imagesize)
 
+        self.transform_std = IMAGENET_STD  
+        self.transform_mean = IMAGENET_MEAN
+
     def __getitem__(self, idx):
         classname, anomaly, image_path, mask_path = self.data_to_iterate[idx]
         image = PIL.Image.open(image_path).convert("RGB")
