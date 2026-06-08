@@ -63,82 +63,50 @@ SAMPLER_MAP = {
 
 class DataPrefetcher:
     """
-    Membungkus DataLoader dengan CUDA prefetch.
+    Membungkus DataLoader dengan transfer CPU→GPU non-blocking.
 
-    Cara kerja:
-      - Saat GPU sedang memproses batch ke-N, prefetcher sudah memindahkan
-        batch ke-(N+1) ke GPU di background stream yang terpisah.
-      - Hasilnya: tidak ada idle time di GPU menunggu transfer CPU→GPU.
-      - Ini persis pola yang dipakai YOLO dalam utils/dataloaders.py.
+    Versi ini TIDAK pakai CUDA stream terpisah karena stream + persistent_workers
+    bisa deadlock: worker subprocess pin memory di stream A, main thread tunggu
+    di stream B, saling block setelah ratusan batch.
 
-    Hanya aktif jika device adalah CUDA. Pada CPU, wrapper ini transparan
-    (pass-through ke DataLoader biasa).
+    Solusi yang dipakai:
+      - Transfer dilakukan dengan .to(device, non_blocking=True)
+      - pin_memory=True di DataLoader sudah menjamin DMA transfer yang cepat
+      - persistent_workers tetap aktif untuk menghindari respawn subprocess
+      - Overlap transfer-vs-komputasi terjadi secara implisit karena PyTorch
+        CUDA runtime sudah mengatur hal ini lewat default stream
     """
 
     def __init__(self, loader: torch.utils.data.DataLoader,
                  device: torch.device):
-        self.loader = loader
-        self.device = device
+        self.loader  = loader
+        self.device  = device
         self.is_cuda = device.type == "cuda"
-        # Teruskan atribut penting dari loader asli
         self.dataset = loader.dataset
-        self.sampler = loader.sampler
-
-        # Atribut nama untuk kompatibilitas kode yang mengakses loader.name
+        self.sampler = getattr(loader, "sampler", None)
         if hasattr(loader, "name"):
             self.name = loader.name
 
-    # ── iterator ────────────────────────────────────────────────────────────
-
     def __iter__(self):
-        if not self.is_cuda:
-            # CPU mode: langsung iterasi tanpa prefetch
-            yield from self.loader
-            return
-
-        stream = torch.cuda.Stream(device=self.device)
-        loader_iter = iter(self.loader)
-
-        # Ambil batch pertama di stream prefetch
-        batch = next(loader_iter, None)
-        if batch is None:
-            return
-
-        with torch.cuda.stream(stream):
-            batch = self._to_device(batch)
-
-        while True:
-            # Ambil batch berikutnya di background (overlap dengan komputasi)
-            torch.cuda.current_stream(self.device).wait_stream(stream)
-            current_batch = batch
-
-            batch = next(loader_iter, None)
-            if batch is not None:
-                with torch.cuda.stream(stream):
-                    batch = self._to_device(batch)
-
-            yield current_batch
-
-            if batch is None:
-                break
+        for batch in self.loader:
+            if self.is_cuda:
+                yield self._to_device(batch)
+            else:
+                yield batch
 
     def __len__(self):
         return len(self.loader)
 
-    # ── helpers ──────────────────────────────────────────────────────────────
-
     def _to_device(self, batch):
-        """Pindahkan batch ke device secara non-blocking."""
+        """Pindahkan semua tensor ke device dengan non_blocking=True."""
         if isinstance(batch, dict):
             return {
-                k: v.to(self.device, non_blocking=True)
-                   if isinstance(v, torch.Tensor) else v
+                k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
                 for k, v in batch.items()
             }
         if isinstance(batch, (list, tuple)):
             moved = [
-                v.to(self.device, non_blocking=True)
-                   if isinstance(v, torch.Tensor) else v
+                v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
                 for v in batch
             ]
             return type(batch)(moved)

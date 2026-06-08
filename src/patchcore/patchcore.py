@@ -112,7 +112,7 @@ class PatchCore(torch.nn.Module):
             return self.forward_modules["feature_aggregator"](images)
 
     def embed(self, data):
-        if isinstance(data, torch.utils.data.DataLoader):
+        if isinstance(data, torch.utils.data.DataLoader) or hasattr(data, "loader"):
             features = []
             for image in data:
                 if isinstance(image, dict):
@@ -215,7 +215,8 @@ class PatchCore(torch.nn.Module):
         self.anomaly_scorer.fit(detection_features=[features])
 
     def predict(self, data):
-        if isinstance(data, torch.utils.data.DataLoader):
+        # Terima DataLoader biasa ATAU DataPrefetcher wrapper
+        if isinstance(data, torch.utils.data.DataLoader) or hasattr(data, "loader"):
             return self._predict_dataloader(data)
         return self._predict(data)
 
@@ -232,8 +233,9 @@ class PatchCore(torch.nn.Module):
         with tqdm.tqdm(dataloader, desc="Inferring...", leave=False) as data_iterator:
             for image in data_iterator:
                 if isinstance(image, dict):
-                    labels_gt.extend(image["is_anomaly"].numpy().tolist())
-                    masks_gt.extend(image["mask"].numpy().tolist())
+                    # Tensor mungkin sudah di GPU (dari DataPrefetcher) — .cpu() dulu
+                    labels_gt.extend(image["is_anomaly"].cpu().numpy().tolist())
+                    masks_gt.extend(image["mask"].cpu().numpy().tolist())
                     image = image["image"]
                 _scores, _masks = self._predict(image)
                 for score, mask in zip(_scores, _masks):

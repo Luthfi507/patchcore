@@ -240,61 +240,50 @@ class MultiGPUFeatureExtractor:
     """
     Menjalankan NetworkFeatureAggregator di beberapa GPU secara paralel.
 
-    Cara kerja (mirip YOLO manual batch-split):
+    Cara kerja:
       1. Batch dibagi rata ke N GPU.
-      2. Tiap GPU menjalankan forward() di thread terpisah (concurrent.futures).
-      3. Hasil dikumpulkan dan di-concat kembali di CPU.
+      2. Tiap GPU punya CUDA stream sendiri — dispatch forward secara async.
+      3. torch.cuda.synchronize() per-GPU memastikan semua selesai sebelum
+         hasil di-concat ke primary device.
 
-    Kenapa tidak pakai DataParallel langsung?
-    - ForwardHook menulis ke self.outputs (shared dict) — tidak thread-safe di DP.
-    - LastLayerToExtractReachedException tidak bisa di-raise dari replika DP.
-    - Solusi: satu NetworkFeatureAggregator per GPU, masing-masing punya
-      hook dan outputs-nya sendiri, dijalankan paralel via ThreadPoolExecutor.
+    Kenapa tidak ThreadPoolExecutor?
+      ThreadPoolExecutor + CUDA context menyebabkan hang setelah ratusan batch
+      karena PyTorch CUDA context tidak thread-safe secara default.
+
+    Kenapa tidak torch.nn.DataParallel?
+      ForwardHook menulis ke self.outputs (shared dict) — race condition di DP.
+      LastLayerToExtractReachedException tidak bisa di-raise dari replika DP.
     """
 
     def __init__(self, backbone, layers_to_extract_from, gpu_ids: list):
-        """
-        Args:
-            backbone   : backbone asli (belum di device manapun, atau sudah di gpu_ids[0]).
-            layers_to_extract_from: list layer name.
-            gpu_ids    : list GPU id, e.g. [0, 1].
-        """
         self.gpu_ids = gpu_ids
         self.layers  = layers_to_extract_from
         self.n_gpus  = len(gpu_ids)
 
-        # Buat satu salinan NetworkFeatureAggregator per GPU
-        # Setiap aggregator punya backbone sendiri (deep copy) di GPU-nya
         raw_backbone = _unwrap_module(backbone)
         self.aggregators = []
+        self.streams     = []
+
         for i, gid in enumerate(gpu_ids):
             dev = torch.device(f"cuda:{gid}")
-            if i == 0:
-                bb = raw_backbone.to(dev)
-            else:
-                bb = copy.deepcopy(raw_backbone).to(dev)
+            bb  = raw_backbone.to(dev) if i == 0 else copy.deepcopy(raw_backbone).to(dev)
             agg = NetworkFeatureAggregator(bb, layers_to_extract_from, dev)
             agg.eval()
             self.aggregators.append(agg)
+            # Stream dedikasi per GPU — dispatch non-blocking
+            self.streams.append(torch.cuda.Stream(device=dev))
 
         self.primary_device = torch.device(f"cuda:{gpu_ids[0]}")
 
     def __call__(self, images: torch.Tensor) -> dict:
         """
-        Forward images melalui semua GPU secara paralel.
-
-        Args:
-            images: tensor [B, C, H, W] di device manapun.
-        Returns:
-            dict {layer_name: tensor [B, C, H, W]} di primary_device.
+        Split batch → forward paralel via CUDA streams → concat ke primary GPU.
         """
-        import concurrent.futures
-
         B = images.shape[0]
-        # Hitung ukuran chunk per GPU — sisa masuk ke GPU terakhir
+
+        # ── Split batch ──────────────────────────────────────────────────
         chunk_size = max(1, B // self.n_gpus)
-        chunks     = []
-        start      = 0
+        chunks, start = [], 0
         for i in range(self.n_gpus):
             end = start + chunk_size if i < self.n_gpus - 1 else B
             if start < B:
@@ -302,28 +291,27 @@ class MultiGPUFeatureExtractor:
             start = end
 
         actual_n = len(chunks)
+        results  = [None] * actual_n
 
-        def _forward_one(agg, chunk):
-            dev = agg.device
-            with torch.no_grad():
-                x = chunk.to(dev, non_blocking=True)
-                return agg(x)          # returns dict {layer: tensor}
+        # ── Dispatch forward ke tiap GPU di stream-nya masing-masing ────
+        for i in range(actual_n):
+            agg    = self.aggregators[i]
+            stream = self.streams[i]
+            chunk  = chunks[i]
+            with torch.cuda.stream(stream):
+                with torch.no_grad():
+                    # Pindahkan chunk ke GPU-i secara blocking (aman)
+                    x = chunk.to(agg.device)
+                    results[i] = agg(x)
 
-        # Jalankan paralel di thread pool (GIL tidak menghalangi CUDA ops)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=actual_n) as pool:
-            futures = [
-                pool.submit(_forward_one, self.aggregators[i], chunks[i])
-                for i in range(actual_n)
-            ]
-            results = [f.result() for f in futures]
+        # ── Tunggu semua GPU selesai ─────────────────────────────────────
+        for i in range(actual_n):
+            torch.cuda.synchronize(self.aggregators[i].device)
 
-        # Gabungkan hasil dari semua GPU ke primary device
+        # ── Concat hasil ke primary device ───────────────────────────────
         merged = {}
         for layer in self.layers:
-            parts = [
-                res[layer].to(self.primary_device, non_blocking=True)
-                for res in results
-            ]
+            parts = [results[i][layer].to(self.primary_device) for i in range(actual_n)]
             merged[layer] = torch.cat(parts, dim=0)
 
         return merged
@@ -338,7 +326,6 @@ class MultiGPUFeatureExtractor:
         return self.primary_device
 
     def feature_dimensions(self, input_shape):
-        """Delegate ke aggregator pertama."""
         return self.aggregators[0].feature_dimensions(input_shape)
 
 
