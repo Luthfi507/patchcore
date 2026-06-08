@@ -3,7 +3,7 @@ from typing import Union
 
 import numpy as np
 import torch
-import tqdm
+from tqdm import tqdm
 
 
 class IdentitySampler:
@@ -15,8 +15,8 @@ class IdentitySampler:
 
 class BaseSampler(abc.ABC):
     def __init__(self, percentage: float):
-        if not 0 < percentage < 1:
-            raise ValueError("Percentage value not in (0, 1).")
+        if not 0 < percentage <= 1:
+            raise ValueError("Percentage value must be in (0, 1].")
         self.percentage = percentage
 
     @abc.abstractmethod
@@ -35,6 +35,12 @@ class BaseSampler(abc.ABC):
             return features.cpu().numpy()
         return features.to(self.features_device)
 
+    def _to_tensor(self, features: Union[torch.Tensor, np.ndarray]) -> torch.Tensor:
+        self._store_type(features)
+        if isinstance(features, np.ndarray):
+            return torch.from_numpy(features)
+        return features
+
 
 class GreedyCoresetSampler(BaseSampler):
     def __init__(
@@ -49,15 +55,13 @@ class GreedyCoresetSampler(BaseSampler):
         self.device = device
         self.dimension_to_project_features_to = dimension_to_project_features_to
 
-    def _reduce_features(self, features):
+    def _reduce_features(self, features: torch.Tensor) -> torch.Tensor:
         if features.shape[1] == self.dimension_to_project_features_to:
-            return features
+            return features.to(self.device)
         mapper = torch.nn.Linear(
             features.shape[1], self.dimension_to_project_features_to, bias=False
-        )
-        _ = mapper.to(self.device)
-        features = features.to(self.device)
-        return mapper(features)
+        ).to(self.device)
+        return mapper(features.to(self.device))
 
     def run(
         self, features: Union[torch.Tensor, np.ndarray]
@@ -69,9 +73,8 @@ class GreedyCoresetSampler(BaseSampler):
         """
         if self.percentage == 1:
             return features
-        self._store_type(features)
-        if isinstance(features, np.ndarray):
-            features = torch.from_numpy(features)
+
+        features = self._to_tensor(features)
         reduced_features = self._reduce_features(features)
         sample_indices = self._compute_greedy_coreset_indices(reduced_features)
         features = features[sample_indices]
@@ -95,7 +98,7 @@ class GreedyCoresetSampler(BaseSampler):
             features: [NxD] input feature bank to sample.
         """
         distance_matrix = self._compute_batchwise_differences(features, features)
-        coreset_anchor_distances = torch.norm(distance_matrix, dim=1)
+        coreset_anchor_distances = distance_matrix.norm(dim=1)
 
         coreset_indices = []
         num_coreset_samples = int(len(features) * self.percentage)
@@ -104,13 +107,14 @@ class GreedyCoresetSampler(BaseSampler):
             select_idx = torch.argmax(coreset_anchor_distances).item()
             coreset_indices.append(select_idx)
 
-            coreset_select_distance = distance_matrix[
-                :, select_idx : select_idx + 1  # noqa E203
-            ]
-            coreset_anchor_distances = torch.cat(
-                [coreset_anchor_distances.unsqueeze(-1), coreset_select_distance], dim=1
-            )
-            coreset_anchor_distances = torch.min(coreset_anchor_distances, dim=1).values
+            coreset_select_distance = distance_matrix[:, select_idx : select_idx + 1]
+            coreset_anchor_distances = torch.min(
+                torch.cat(
+                    [coreset_anchor_distances.unsqueeze(-1), coreset_select_distance],
+                    dim=1,
+                ),
+                dim=1,
+            ).values
 
         return np.array(coreset_indices)
 
@@ -137,35 +141,33 @@ class ApproximateGreedyCoresetSampler(GreedyCoresetSampler):
         Args:
             features: [NxD] input feature bank to sample.
         """
-        number_of_starting_points = np.clip(
-            self.number_of_starting_points, None, len(features)
-        )
+        number_of_starting_points = min(self.number_of_starting_points, len(features))
         start_points = np.random.choice(
             len(features), number_of_starting_points, replace=False
-        ).tolist()
+        )
 
         approximate_distance_matrix = self._compute_batchwise_differences(
             features, features[start_points]
         )
-        approximate_coreset_anchor_distances = torch.mean(
-            approximate_distance_matrix, axis=-1
-        ).reshape(-1, 1)
+        approximate_coreset_anchor_distances = (
+            approximate_distance_matrix.mean(dim=1, keepdim=True)
+        )
         coreset_indices = []
         num_coreset_samples = int(len(features) * self.percentage)
 
         with torch.no_grad():
-            for _ in tqdm.tqdm(range(num_coreset_samples), desc="Subsampling..."):
+            for _ in tqdm(range(num_coreset_samples), desc="Subsampling..."):
                 select_idx = torch.argmax(approximate_coreset_anchor_distances).item()
                 coreset_indices.append(select_idx)
                 coreset_select_distance = self._compute_batchwise_differences(
-                    features, features[select_idx : select_idx + 1]  # noqa: E203
-                )
-                approximate_coreset_anchor_distances = torch.cat(
-                    [approximate_coreset_anchor_distances, coreset_select_distance],
-                    dim=-1,
+                    features, features[select_idx : select_idx + 1]
                 )
                 approximate_coreset_anchor_distances = torch.min(
-                    approximate_coreset_anchor_distances, dim=1
+                    torch.cat(
+                        [approximate_coreset_anchor_distances, coreset_select_distance],
+                        dim=-1,
+                    ),
+                    dim=1,
                 ).values.reshape(-1, 1)
 
         return np.array(coreset_indices)
@@ -183,9 +185,10 @@ class RandomSampler(BaseSampler):
         Args:
             features: [N x D]
         """
-        num_random_samples = int(len(features) * self.percentage)
-        subset_indices = np.random.choice(
-            len(features), num_random_samples, replace=False
-        )
-        subset_indices = np.array(subset_indices)
-        return features[subset_indices]
+        subset_size = int(len(features) * self.percentage)
+        if isinstance(features, np.ndarray):
+            indices = np.random.choice(len(features), subset_size, replace=False)
+            return features[indices]
+
+        indices = torch.randperm(len(features), device=features.device)[:subset_size]
+        return features[indices]
