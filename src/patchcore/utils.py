@@ -75,20 +75,19 @@ def plot_segmentation_images(
 
 
 def create_storage_folder(
-    main_folder_path, project_folder, group_folder, mode="iterate"
+    project_folder, group_folder
 ):
-    os.makedirs(main_folder_path, exist_ok=True)
-    project_path = os.path.join(main_folder_path, project_folder)
+    os.makedirs("result", exist_ok=True)
+    project_path = os.path.join("result", project_folder)
+    
     os.makedirs(project_path, exist_ok=True)
     save_path = os.path.join(project_path, group_folder)
-    if mode == "iterate":
-        counter = 0
-        while os.path.exists(save_path):
-            save_path = os.path.join(project_path, group_folder + "_" + str(counter))
-            counter += 1
-        os.makedirs(save_path)
-    elif mode == "overwrite":
-        os.makedirs(save_path, exist_ok=True)
+
+    counter = 0
+    while os.path.exists(save_path):
+        save_path = os.path.join(project_path, group_folder + "_" + str(counter))
+        counter += 1
+    os.makedirs(save_path)
 
     return save_path
 
