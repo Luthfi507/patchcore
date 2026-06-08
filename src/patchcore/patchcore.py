@@ -7,10 +7,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import tqdm
+from torch.nn.parallel import DataParallel, DistributedDataParallel
 
 from . import backbones
 from . import common
 from . import sampler
+
+
+def _unwrap(module):
+    """Kembalikan modul asli di balik DataParallel / DistributedDataParallel wrapper."""
+    if isinstance(module, (DataParallel, DistributedDataParallel)):
+        return module.module
+    return module
 
 LOGGER = logging.getLogger(__name__)
 
@@ -35,7 +43,11 @@ class PatchCore(torch.nn.Module):
         featuresampler=sampler.IdentitySampler(),
         nn_method=common.FaissNN(False, 4)
     ):
-        self.backbone = backbone.to(device)
+        # backbone bisa berupa DataParallel / DDP wrapper — simpan referensinya
+        self.backbone = backbone
+        # _raw_backbone adalah backbone asli (tanpa wrapper) untuk hook & attr akses
+        self._raw_backbone = _unwrap(backbone)
+
         self.layers_to_extract_from = layers_to_extract_from
         self.input_shape = input_shape
 
@@ -44,8 +56,9 @@ class PatchCore(torch.nn.Module):
 
         self.forward_modules = torch.nn.ModuleDict({})
 
+        # NetworkFeatureAggregator perlu backbone asli agar hook bisa dipasang
         feature_aggregator = common.NetworkFeatureAggregator(
-            self.backbone, self.layers_to_extract_from, self.device
+            self._raw_backbone, self.layers_to_extract_from, self.device
         )
         feature_dimensions = feature_aggregator.feature_dimensions(input_shape)
         self.forward_modules["feature_aggregator"] = feature_aggregator
@@ -234,8 +247,9 @@ class PatchCore(torch.nn.Module):
         self.anomaly_scorer.save(
             save_path, save_features_separately=False, prepend=prepend
         )
+        raw_bb = _unwrap(self.backbone)
         patchcore_params = {
-            "backbone.name": self.backbone.name,
+            "backbone.name": raw_bb.name,
             "layers_to_extract_from": self.layers_to_extract_from,
             "input_shape": self.input_shape,
             "pretrain_embed_dimension": self.forward_modules[
@@ -255,7 +269,7 @@ class PatchCore(torch.nn.Module):
         self,
         load_path: str,
         device: torch.device,
-        nn_method: common.FaissNN(False, 4),
+        nn_method: common.FaissNN,
         prepend: str = "",
     ) -> None:
         LOGGER.info("Loading and initializing ")
