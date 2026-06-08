@@ -175,19 +175,11 @@ class RescaleSegmentor:
 
 
 class NetworkFeatureAggregator(torch.nn.Module):
-    """
-    Efficient extraction of network features.
-
-    Perubahan vs versi asli:
-    - Menerima backbone yang sudah di-unwrap (tanpa DP/DDP wrapper).
-      Wrapping multi-GPU dilakukan DI LUAR oleh MultiGPUFeatureExtractor.
-    - Hook dipasang ke backbone asli sehingga tidak ada konflik dengan DP.
-    """
+    """Efficient extraction of network features."""
 
     def __init__(self, backbone, layers_to_extract_from, device):
         super(NetworkFeatureAggregator, self).__init__()
         self.layers_to_extract_from = layers_to_extract_from
-        # Selalu pakai backbone asli (unwrap) untuk pemasangan hook
         self.backbone = _unwrap_module(backbone)
         self.device = device
 
@@ -238,21 +230,19 @@ class NetworkFeatureAggregator(torch.nn.Module):
 
 class MultiGPUFeatureExtractor:
     """
-    Menjalankan NetworkFeatureAggregator di beberapa GPU secara paralel.
+    Menjalankan NetworkFeatureAggregator di beberapa GPU.
 
-    Cara kerja:
-      1. Batch dibagi rata ke N GPU.
-      2. Tiap GPU punya CUDA stream sendiri — dispatch forward secara async.
-      3. torch.cuda.synchronize() per-GPU memastikan semua selesai sebelum
-         hasil di-concat ke primary device.
+    Strategi: split batch secara manual ke N GPU, jalankan forward
+    secara sequential per GPU (bukan paralel via thread/stream),
+    lalu concat hasilnya ke primary GPU.
 
-    Kenapa tidak ThreadPoolExecutor?
-      ThreadPoolExecutor + CUDA context menyebabkan hang setelah ratusan batch
-      karena PyTorch CUDA context tidak thread-safe secara default.
-
-    Kenapa tidak torch.nn.DataParallel?
-      ForwardHook menulis ke self.outputs (shared dict) — race condition di DP.
-      LastLayerToExtractReachedException tidak bisa di-raise dari replika DP.
+    Kenapa sequential dan bukan paralel?
+    - torch.cuda.Stream + blocking .to() di dalam stream context = deadlock
+    - ThreadPoolExecutor + multi CUDA context = hang setelah ratusan batch
+    - Sequential forward pada 2x T4 tetap lebih cepat daripada 1 GPU
+      karena memory pressure per GPU berkurang (batch lebih kecil) dan
+      tidak ada overhead sinkronisasi antar GPU.
+    - Untuk paralel sejati, gunakan mode DDP via torchrun.
     """
 
     def __init__(self, backbone, layers_to_extract_from, gpu_ids: list):
@@ -262,26 +252,26 @@ class MultiGPUFeatureExtractor:
 
         raw_backbone = _unwrap_module(backbone)
         self.aggregators = []
-        self.streams     = []
 
         for i, gid in enumerate(gpu_ids):
             dev = torch.device(f"cuda:{gid}")
-            bb  = raw_backbone.to(dev) if i == 0 else copy.deepcopy(raw_backbone).to(dev)
+            # GPU-0: pakai backbone asli (sudah di sana), GPU-lain: deep copy
+            bb = raw_backbone if i == 0 else copy.deepcopy(raw_backbone)
+            bb = bb.to(dev)
             agg = NetworkFeatureAggregator(bb, layers_to_extract_from, dev)
             agg.eval()
             self.aggregators.append(agg)
-            # Stream dedikasi per GPU — dispatch non-blocking
-            self.streams.append(torch.cuda.Stream(device=dev))
 
         self.primary_device = torch.device(f"cuda:{gpu_ids[0]}")
 
     def __call__(self, images: torch.Tensor) -> dict:
         """
-        Split batch → forward paralel via CUDA streams → concat ke primary GPU.
+        Split batch ke N GPU, forward satu per satu, concat ke primary GPU.
+        Tidak ada threading/streaming — aman dari deadlock.
         """
         B = images.shape[0]
 
-        # ── Split batch ──────────────────────────────────────────────────
+        # Bagi batch merata; sisa masuk ke GPU terakhir
         chunk_size = max(1, B // self.n_gpus)
         chunks, start = [], 0
         for i in range(self.n_gpus):
@@ -291,27 +281,19 @@ class MultiGPUFeatureExtractor:
             start = end
 
         actual_n = len(chunks)
-        results  = [None] * actual_n
+        results  = []
 
-        # ── Dispatch forward ke tiap GPU di stream-nya masing-masing ────
+        # Forward sequential per GPU — tidak ada shared state, tidak ada lock
         for i in range(actual_n):
-            agg    = self.aggregators[i]
-            stream = self.streams[i]
-            chunk  = chunks[i]
-            with torch.cuda.stream(stream):
-                with torch.no_grad():
-                    # Pindahkan chunk ke GPU-i secara blocking (aman)
-                    x = chunk.to(agg.device)
-                    results[i] = agg(x)
+            agg = self.aggregators[i]
+            with torch.no_grad():
+                x = chunks[i].to(agg.device)   # pindah ke GPU-i
+                results.append(agg(x))          # forward + hook capture
 
-        # ── Tunggu semua GPU selesai ─────────────────────────────────────
-        for i in range(actual_n):
-            torch.cuda.synchronize(self.aggregators[i].device)
-
-        # ── Concat hasil ke primary device ───────────────────────────────
+        # Concat semua hasil ke primary GPU
         merged = {}
         for layer in self.layers:
-            parts = [results[i][layer].to(self.primary_device) for i in range(actual_n)]
+            parts = [res[layer].to(self.primary_device) for res in results]
             merged[layer] = torch.cat(parts, dim=0)
 
         return merged
@@ -361,9 +343,9 @@ class NearestNeighbourScorer(object):
         self.nn_method.fit(self.detection_features)
 
     def predict(self, query_features: List[np.ndarray]) -> Union[np.ndarray, np.ndarray, np.ndarray]:
-        query_features  = self.feature_merger.merge(query_features)
+        query_features = self.feature_merger.merge(query_features)
         query_distances, query_nns = self.imagelevel_nn(query_features)
-        anomaly_scores  = np.mean(query_distances, axis=-1)
+        anomaly_scores = np.mean(query_distances, axis=-1)
         return anomaly_scores, query_distances, query_nns
 
     @staticmethod

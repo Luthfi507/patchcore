@@ -239,9 +239,6 @@ def _make_loader(dataset, batch_size: int, num_workers: int,
         Ini adalah syarat wajib agar non_blocking=True di DataPrefetcher
         benar-benar overlap dengan komputasi GPU.
     """
-    # persistent_workers butuh minimal 1 worker
-    use_persistent = num_workers > 0
-
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
@@ -250,7 +247,7 @@ def _make_loader(dataset, batch_size: int, num_workers: int,
         num_workers=num_workers,
         pin_memory=True,
         drop_last=False,
-        persistent_workers=use_persistent,
+        persistent_workers=False,
         prefetch_factor=prefetch_factor if num_workers > 0 else None,
     )
 
