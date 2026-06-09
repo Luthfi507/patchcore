@@ -1,6 +1,6 @@
 import os
 
-import PIL
+import PIL.Image
 import torch
 from torchvision import transforms
 
@@ -64,12 +64,28 @@ class MVTecDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         classname, anomaly, image_path, mask_path = self.data_to_iterate[idx]
-        image = PIL.Image.open(image_path).convert("RGB")
-        image = self.transform_img(image)
+
+        # ── Load image dengan fallback ke gambar hitam jika corrupt ──────
+        try:
+            image = PIL.Image.open(image_path).convert("RGB")
+            image = self.transform_img(image)
+            _image_ok = True
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Gambar corrupt/tidak bisa dibaca (idx=%d): %s — %s",
+                idx, image_path, e,
+            )
+            blank = PIL.Image.new("RGB", (self.imagesize[1], self.imagesize[2]), color=0)
+            image = self.transform_img(blank)
+            _image_ok = False
 
         if self.split == "test" and mask_path is not None:
-            mask = PIL.Image.open(mask_path)
-            mask = self.transform_mask(mask)
+            try:
+                mask = PIL.Image.open(mask_path)
+                mask = self.transform_mask(mask)
+            except Exception:
+                mask = torch.zeros([1, *image.size()[1:]])
         else:
             mask = torch.zeros([1, *image.size()[1:]])
 
