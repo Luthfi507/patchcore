@@ -199,7 +199,13 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--preprocessing", type=str, default="mean", choices=["mean", "conv"])
     pc.add_argument("--aggregation",   type=str, default="mean", choices=["mean", "mlp"])
     pc.add_argument("--anomaly_scorer_num_nn", type=int, default=5)
-    pc.add_argument("--patchsize",  type=int,   default=3)
+    pc.add_argument("--patchsize",   type=int, default=3)
+    pc.add_argument("--patchstride", type=int, default=1,
+                    help="Stride untuk patch extraction. "
+                         "Naikkan (mis. 2 atau 4) untuk kurangi jumlah patch "
+                         "dan percepat coreset sampling secara signifikan. "
+                         "stride=1 -> 224x224 patch/gambar, "
+                         "stride=2 -> 112x112, stride=4 -> 56x56.")
     pc.add_argument("--patchscore", type=str,   default="max")
     pc.add_argument("--patchoverlap",       type=float, default=0.0)
     pc.add_argument("--patchsize_aggregate", "-pa", nargs="+", type=int, default=[])
@@ -419,6 +425,7 @@ def get_patchcore_list(args, input_shape, feat_sampler,
             pretrain_embed_dimension=args.pretrain_embed_dimension,
             target_embed_dimension=args.target_embed_dimension,
             patchsize=args.patchsize,
+            patchstride=args.patchstride,
             featuresampler=feat_sampler,
             nn_method=nn_method,
             gpu_ids=effective_gpu_ids,
