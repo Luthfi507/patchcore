@@ -5,7 +5,7 @@ import torch
 from torchvision import transforms
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
+IMAGENET_STD  = [0.229, 0.224, 0.225]
 
 
 class MVTecDataset(torch.utils.data.Dataset):
@@ -61,6 +61,9 @@ class MVTecDataset(torch.utils.data.Dataset):
         self.transform_mask = transforms.Compose(self.transform_mask)
 
         self.imagesize = (3, imagesize, imagesize)
+        # Simpan mean/std agar run_patchcore bisa denormalize gambar saat visualisasi
+        self.transform_mean = IMAGENET_MEAN
+        self.transform_std  = IMAGENET_STD
 
     @staticmethod
     def _safe_open(path, mode="RGB"):

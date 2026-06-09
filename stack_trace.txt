@@ -1,0 +1,85 @@
+/home/duke/miniconda3/envs/patch/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/duke/miniconda3/envs/patch/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=ResNet50_Weights.IMAGENET1K_V1`. You can also use `weights=ResNet50_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+
+Computing support features...:   0%|          | 0/567 [00:00<?, ?it/s][A
+Computing support features...:   0%|          | 1/567 [00:05<52:16,  5.54s/it][A
+Computing support features...:   0%|          | 2/567 [00:11<51:59,  5.52s/it][A
+Computing support features...:   1%|          | 3/567 [00:15<47:30,  5.05s/it][A
+Computing support features...:   1%|          | 4/567 [00:18<40:29,  4.32s/it][A
+Computing support features...:   1%|          | 5/567 [00:22<37:29,  4.00s/it][A
+Computing support features...:   1%|          | 6/567 [00:25<34:49,  3.72s/it][A
+Computing support features...:   1%|          | 7/567 [00:28<33:33,  3.59s/it][A
+Computing support features...:   1%|▏         | 8/567 [00:32<32:49,  3.52s/it][A
+Computing support features...:   2%|▏         | 9/567 [00:35<32:10,  3.46s/it][A
+Computing support features...:   2%|▏         | 10/567 [00:39<32:44,  3.53s/it][A
+Computing support features...:   2%|▏         | 11/567 [00:41<30:39,  3.31s/it][A
+Computing support features...:   2%|▏         | 12/567 [00:44<29:55,  3.23s/it][A
+Computing support features...:   2%|▏         | 13/567 [00:47<29:03,  3.15s/it][A
+Computing support features...:   2%|▏         | 14/567 [00:50<28:47,  3.12s/it][A
+Computing support features...:   3%|▎         | 15/567 [00:53<28:07,  3.06s/it][A
+Computing support features...:   3%|▎         | 16/567 [00:57<29:00,  3.16s/it][A
+Computing support features...:   3%|▎         | 17/567 [01:00<30:33,  3.33s/it][A
+Computing support features...:   3%|▎         | 18/567 [01:03<29:25,  3.22s/it][A
+Computing support features...:   3%|▎         | 19/567 [01:06<28:45,  3.15s/it][A
+Computing support features...:   4%|▎         | 20/567 [01:09<27:25,  3.01s/it][A
+Computing support features...:   4%|▎         | 21/567 [01:12<26:29,  2.91s/it][A
+Computing support features...:   4%|▍         | 22/567 [01:15<26:49,  2.95s/it][A
+Computing support features...:   4%|▍         | 23/567 [01:18<26:12,  2.89s/it][A
+Computing support features...:   4%|▍         | 24/567 [01:21<27:12,  3.01s/it][A
+Computing support features...:   4%|▍         | 25/567 [01:23<25:51,  2.86s/it][A
+Computing support features...:   5%|▍         | 26/567 [01:26<25:26,  2.82s/it][A
+Computing support features...:   5%|▍         | 27/567 [01:29<26:41,  2.97s/it][A
+Computing support features...:   5%|▍         | 28/567 [01:33<27:01,  3.01s/it][A
+Computing support features...:   5%|▌         | 29/567 [01:35<25:54,  2.89s/it][A
+Computing support features...:   5%|▌         | 30/567 [01:38<24:49,  2.77s/it][A
+Computing support features...:   5%|▌         | 31/567 [01:41<25:11,  2.82s/it][A
+Computing support features...:   6%|▌         | 32/567 [01:44<25:42,  2.88s/it][A
+Computing support features...:   6%|▌         | 33/567 [01:47<26:01,  2.92s/it][A
+Computing support features...:   6%|▌         | 34/567 [01:49<25:47,  2.90s/it][A
+Computing support features...:   6%|▌         | 35/567 [01:52<24:25,  2.76s/it][A
+Computing support features...:   6%|▋         | 36/567 [01:55<25:20,  2.86s/it][A
+Computing support features...:   7%|▋         | 37/567 [01:58<26:34,  3.01s/it][A
+Computing support features...:   7%|▋         | 38/567 [02:01<26:02,  2.95s/it][A
+Computing support features...:   7%|▋         | 39/567 [02:04<24:51,  2.83s/it][A
+Computing support features...:   7%|▋         | 40/567 [02:06<23:57,  2.73s/it][A
+Computing support features...:   7%|▋         | 41/567 [02:09<24:52,  2.84s/it][A
+Computing support features...:   7%|▋         | 42/567 [02:12<23:47,  2.72s/it][A
+Computing support features...:   8%|▊         | 43/567 [02:14<22:57,  2.63s/it][A
+Computing support features...:   8%|▊         | 44/567 [02:18<25:41,  2.95s/it][A
+Computing support features...:   8%|▊         | 45/567 [02:21<25:03,  2.88s/it][A
+Computing support features...:   8%|▊         | 46/567 [02:23<24:31,  2.82s/it][A
+Computing support features...:   8%|▊         | 47/567 [02:27<25:33,  2.95s/it][A
+Computing support features...:   8%|▊         | 48/567 [02:29<24:11,  2.80s/it][A
+Computing support features...:   9%|▊         | 49/567 [02:32<24:35,  2.85s/it][A
+Computing support features...:   9%|▉         | 50/567 [02:34<23:50,  2.77s/it][A
+Computing support features...:   9%|▉         | 51/567 [02:38<24:51,  2.89s/it][A
+Computing support features...:   9%|▉         | 52/567 [02:41<25:52,  3.02s/it][A
+Computing support features...:   9%|▉         | 53/567 [02:44<24:40,  2.88s/it][A
+Computing support features...:  10%|▉         | 54/567 [02:46<24:47,  2.90s/it][A
+Computing support features...:  10%|▉         | 55/567 [02:50<27:22,  3.21s/it][A
+Computing support features...:  10%|▉         | 56/567 [02:53<26:40,  3.13s/it][A
+Computing support features...:  10%|█         | 57/567 [02:56<26:07,  3.07s/it][A
+Computing support features...:  10%|█         | 58/567 [02:59<24:51,  2.93s/it][A
+Computing support features...:  10%|█         | 59/567 [03:01<23:44,  2.80s/it][A
+Computing support features...:  11%|█         | 60/567 [03:04<22:55,  2.71s/it][A
+Computing support features...:  11%|█         | 61/567 [03:06<22:16,  2.64s/it][A
+Computing support features...:  11%|█         | 62/567 [03:09<22:11,  2.64s/it][A
+Computing support features...:  11%|█         | 63/567 [03:12<22:47,  2.71s/it][A
+Computing support features...:  11%|█▏        | 64/567 [03:14<22:16,  2.66s/it][A
+Computing support features...:  11%|█▏        | 65/567 [03:18<23:54,  2.86s/it][A
+Computing support features...:  12%|█▏        | 66/567 [03:20<23:10,  2.78s/it][A
+Computing support features...:  12%|█▏        | 67/567 [03:23<22:20,  2.68s/it][A
+Computing support features...:  12%|█▏        | 68/567 [03:25<21:47,  2.62s/it][A
+Computing support features...:  12%|█▏        | 69/567 [03:28<22:03,  2.66s/it][A
+Computing support features...:  12%|█▏        | 70/567 [03:30<21:21,  2.58s/it][A
+Computing support features...:  13%|█▎        | 71/567 [03:33<21:12,  2.57s/it][A
+Computing support features...:  13%|█▎        | 72/567 [03:36<21:12,  2.57s/it][A
+Computing support features...:  13%|█▎        | 73/567 [03:38<21:56,  2.66s/it][A
+Computing support features...:  13%|█▎        | 74/567 [03:41<21:37,  2.63s/it][A
+Computing support features...:  13%|█▎        | 75/567 [03:43<20:57,  2.56s/it][A
+Computing support features...:  13%|█▎        | 76/567 [03:46<21:23,  2.61s/it][A
+Computing support features...:  14%|█▎        | 77/567 [03:49<21:09,  2.59s/it][A
+Computing support features...:  14%|█▍        | 78/567 [03:51<21:44,  2.67s/it][A
+Computing support features...:  14%|█▍        | 79/567 [03:54<22:07,  2.72s/it][A

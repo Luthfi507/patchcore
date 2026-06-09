@@ -65,16 +65,13 @@ class DataPrefetcher:
     """
     Membungkus DataLoader dengan transfer CPU→GPU non-blocking.
 
-    Versi ini TIDAK pakai CUDA stream terpisah karena stream + persistent_workers
-    bisa deadlock: worker subprocess pin memory di stream A, main thread tunggu
-    di stream B, saling block setelah ratusan batch.
+    Menggunakan .to(device, non_blocking=True) untuk memindahkan tensor ke GPU.
+    pin_memory=True di DataLoader memastikan DMA transfer yang efisien.
+    persistent_workers=True mencegah respawn subprocess tiap iterasi.
 
-    Solusi yang dipakai:
-      - Transfer dilakukan dengan .to(device, non_blocking=True)
-      - pin_memory=True di DataLoader sudah menjamin DMA transfer yang cepat
-      - persistent_workers tetap aktif untuk menghindari respawn subprocess
-      - Overlap transfer-vs-komputasi terjadi secara implisit karena PyTorch
-        CUDA runtime sudah mengatur hal ini lewat default stream
+    PENTING: Tidak menggunakan CUDA stream terpisah karena kombinasi
+    persistent_workers + multi-stream dapat menyebabkan deadlock pada
+    beberapa versi PyTorch (worker menunggu di stream A, main thread di stream B).
     """
 
     def __init__(self, loader: torch.utils.data.DataLoader,
@@ -84,6 +81,7 @@ class DataPrefetcher:
         self.is_cuda = device.type == "cuda"
         self.dataset = loader.dataset
         self.sampler = getattr(loader, "sampler", None)
+        # Propagasikan atribut name dari loader asli jika ada
         if hasattr(loader, "name"):
             self.name = loader.name
 
@@ -239,15 +237,16 @@ def _make_loader(dataset, batch_size: int, num_workers: int,
         Ini adalah syarat wajib agar non_blocking=True di DataPrefetcher
         benar-benar overlap dengan komputasi GPU.
     """
+    use_pin_memory = torch.cuda.is_available() and num_workers > 0
     return torch.utils.data.DataLoader(
         dataset,
         batch_size=batch_size,
         sampler=sampler_obj,
         shuffle=(shuffle and sampler_obj is None),
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=use_pin_memory,
         drop_last=False,
-        persistent_workers=False,
+        persistent_workers=(num_workers > 0),
         prefetch_factor=prefetch_factor if num_workers > 0 else None,
     )
 
@@ -277,10 +276,13 @@ def get_dataloaders(args: argparse.Namespace, seed: int,
     for subdataset in subdatasets:
         train_ds = MVTecDataset(
             args.data_path, classname=subdataset,
+            resize=args.resize, imagesize=args.imagesize,
             train_val_split=args.train_val_split, split="train",
         )
         test_ds = MVTecDataset(
-            args.data_path, classname=subdataset, split="test",
+            args.data_path, classname=subdataset,
+            resize=args.resize, imagesize=args.imagesize,
+            split="test",
         )
 
         # ── Training loader ──────────────────────────────────────────────
@@ -317,6 +319,7 @@ def get_dataloaders(args: argparse.Namespace, seed: int,
         if args.train_val_split < 1:
             val_ds = MVTecDataset(
                 args.data_path, classname=subdataset,
+                resize=args.resize, imagesize=args.imagesize,
                 train_val_split=args.train_val_split, split="val",
             )
             val_loader = _make_loader(
@@ -503,6 +506,7 @@ def _fit_ddp(pc: patchcore.PatchCore,
                 # Gambar mungkin sudah di GPU karena DataPrefetcher;
                 # pastikan float dan di device yang benar.
                 img = image.to(torch.float).to(pc.device)
+                # _embed mengembalikan np.ndarray [N_patches, target_dim]
                 local_features.append(pc._embed(img))
 
     local_features = np.concatenate(local_features, axis=0)
@@ -727,10 +731,9 @@ def _save_segmentation_images(args, dataloaders, run_save_path,
     in_mean = np.array(testing_ds.transform_mean).reshape(-1, 1, 1)
 
     def image_transform(image):
-        return np.clip(
-            (testing_ds.transform_img(image).numpy() * in_std + in_mean) * 255,
-            0, 255,
-        ).astype(np.uint8)
+        # Denormalize: pixel = (normalized * std + mean) * 255
+        img_tensor = testing_ds.transform_img(image).numpy()
+        return np.clip((img_tensor * in_std + in_mean) * 255, 0, 255).astype(np.uint8)
 
     def mask_transform(mask):
         return testing_ds.transform_mask(mask).numpy()

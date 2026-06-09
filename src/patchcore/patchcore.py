@@ -120,15 +120,21 @@ class PatchCore(torch.nn.Module):
                 with torch.no_grad():
                     input_image = image.to(torch.float).to(self.device)
                     features.append(self._embed(input_image))
-            return features
+            return np.concatenate(features, axis=0)
         return self._embed(data)
 
     def _embed(self, images, detach=True, provide_patch_shapes=False):
-        """Returns feature embeddings for images."""
+        """Returns feature embeddings for images.
+
+        Return shape (dengan detach=True):
+          - provide_patch_shapes=False : np.ndarray [N_patches, target_dim]
+          - provide_patch_shapes=True  : (np.ndarray [N_patches, target_dim], patch_shapes)
+        """
 
         def _detach(features):
             if detach:
-                return [x.detach().cpu().numpy() for x in features]
+                # features = Tensor [N_patches, target_dim] → numpy 2D array
+                return features.detach().cpu().numpy()
             return features
 
         if self._use_multi_gpu:
@@ -189,17 +195,18 @@ class PatchCore(torch.nn.Module):
         self._fill_memory_bank(training_data)
 
     def _fill_memory_bank(self, input_data):
+        """
+        Ekstrak fitur dari semua gambar training dan bangun FAISS index.
+
+        Gambar bisa datang dari:
+        - DataPrefetcher (sudah di GPU, non_blocking)
+        - DataLoader biasa (di CPU)
+        Keduanya ditangani dengan .to(torch.float).to(self.device).
+        """
         if self._use_multi_gpu:
             self._multi_gpu_aggregator.eval()
         else:
             self.forward_modules.eval()
-
-        def _image_to_features(input_image):
-            with torch.no_grad():
-                # Kirim ke primary device; MultiGPUFeatureExtractor akan
-                # mendistribusikan chunk ke GPU lain secara internal
-                input_image = input_image.to(torch.float).to(self.device)
-                return self._embed(input_image)
 
         features = []
         with tqdm.tqdm(
@@ -208,7 +215,14 @@ class PatchCore(torch.nn.Module):
             for image in data_iterator:
                 if isinstance(image, dict):
                     image = image["image"]
-                features.append(_image_to_features(image))
+                with torch.no_grad():
+                    # Gambar mungkin sudah di GPU (dari DataPrefetcher) —
+                    # .to() idempotent: tidak ada salinan jika sudah di device yang benar.
+                    input_image = image.to(torch.float).to(self.device)
+                    batch_features = self._embed(input_image)
+                # _embed mengembalikan list of numpy arrays (satu per patch)
+                # gunakan np.array() bukan extend agar axis tetap benar
+                features.append(np.array(batch_features))
 
         features = np.concatenate(features, axis=0)
         features = self.featuresampler.run(features)
@@ -233,14 +247,13 @@ class PatchCore(torch.nn.Module):
         with tqdm.tqdm(dataloader, desc="Inferring...", leave=False) as data_iterator:
             for image in data_iterator:
                 if isinstance(image, dict):
-                    # Tensor mungkin sudah di GPU (dari DataPrefetcher) — .cpu() dulu
+                    # Tensor mungkin sudah di GPU (dari DataPrefetcher) — .cpu() sebelum .numpy()
                     labels_gt.extend(image["is_anomaly"].cpu().numpy().tolist())
                     masks_gt.extend(image["mask"].cpu().numpy().tolist())
                     image = image["image"]
                 _scores, _masks = self._predict(image)
-                for score, mask in zip(_scores, _masks):
-                    scores.append(score)
-                    masks.append(mask)
+                scores.extend(_scores)
+                masks.extend(_masks)
         return scores, masks, labels_gt, masks_gt
 
     def _predict(self, images):
@@ -253,7 +266,7 @@ class PatchCore(torch.nn.Module):
         batchsize = images.shape[0]
         with torch.no_grad():
             features, patch_shapes = self._embed(images, provide_patch_shapes=True)
-            features    = np.asarray(features)
+            # features: np.ndarray [N_patches, target_dim]
             patch_scores = image_scores = self.anomaly_scorer.predict([features])[0]
             image_scores = self.patch_maker.unpatch_scores(image_scores, batchsize=batchsize)
             image_scores = image_scores.reshape(*image_scores.shape[:2], -1)
