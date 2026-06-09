@@ -182,98 +182,142 @@ def compute_and_store_final_results(
     mean_metrics = {"mean_{0}".format(key): item for key, item in mean_metrics.items()}
     return mean_metrics
 
-def check_one(path: str) -> tuple[str, str | None]:
+def check_one(path: str) -> dict:
+    result = {
+        "path": path,
+        "ok": True,
+        "error": None,
+        "width": None,
+        "height": None,
+        "mode": None,
+        "filesize_mb": None,
+    }
+ 
     try:
-        if not os.path.exists(path):
-            return path, "FILE_NOT_FOUND"
-        
-        if os.path.getsize(path) == 0:
-            return path, "EMPTY_FILE"
-        
+        result["filesize_mb"] = os.path.getsize(path) / 1024 / 1024
+ 
+        if result["filesize_mb"] == 0:
+            result["ok"] = False
+            result["error"] = "EMPTY_FILE"
+            return result
+ 
+        # Buka header saja (cepat, tidak decode pixel)
         with PIL.Image.open(path) as img:
-            img.verify()
-
-        with PIL.Image.open(path) as img:
+            result["width"]  = img.width
+            result["height"] = img.height
+            result["mode"]   = img.mode
+            # Decode pixel penuh — ini yang bisa hang kalau ada masalah
             img.convert("RGB")
-            _ = img.size
-
-        return path, None
-    
+            img.load()
+ 
     except Exception as e:
-        return path, f"{type(e).__name__}: {e}"
-    
-def collect_all_images(data_path: str) -> list[str]:
+        result["ok"]    = False
+        result["error"] = f"{type(e).__name__}: {e}"
+ 
+    return result
+ 
+ 
+def collect_all_images(data_path: str) -> list:
     paths = []
     for root, dirs, files in os.walk(data_path):
         dirs.sort()
         for fname in sorted(files):
-            if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
+            if fname.lower().endswith((".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")):
                 paths.append(os.path.join(root, fname))
-
     return paths
-
+ 
+ 
 def main():
-    parser = argparse.ArgumentParser(description="Cek gambar corrupt di dataset")
-    parser.add_argument("--data_path", type=str, required=True,
-                        help="Root folder dataset (misal: dataset/)")
-    parser.add_argument("--workers", type=int, default=8,
-                        help="Jumlah thread paralel untuk pengecekan")
-    parser.add_argument("--output", type=str, default="corrupt_images.txt",
-                        help="File output untuk daftar gambar corrupt")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--workers",   type=int, default=8)
+    parser.add_argument("--output",    type=str, default="corrupt_images.txt")
     args = parser.parse_args()
  
     print(f"Scanning: {args.data_path}")
     all_paths = collect_all_images(args.data_path)
     total = len(all_paths)
-    print(f"Total gambar ditemukan: {total}")
+    print(f"Total gambar: {total}\n")
  
     if total == 0:
-        print("Tidak ada gambar ditemukan. Cek --data_path.")
+        print("Tidak ada gambar ditemukan.")
         sys.exit(1)
  
-    corrupt = []
-    ok_count = 0
- 
-    print(f"\nMemeriksa {total} gambar dengan {args.workers} thread...\n")
- 
+    results  = []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(check_one, p): p for p in all_paths}
         done = 0
         for future in as_completed(futures):
             done += 1
-            path, error = future.result()
-            if error:
-                corrupt.append((path, error))
-                print(f"  [CORRUPT] {path}\n           → {error}")
-            else:
-                ok_count += 1
- 
-            # Progress setiap 100 file
-            if done % 100 == 0 or done == total:
-                print(f"  Progress: {done}/{total} ({100*done//total}%)", end="\r")
+            r = future.result()
+            results.append(r)
+            if not r["ok"]:
+                print(f"  [ERROR] {r['path']}\n         → {r['error']}")
+            if done % 200 == 0 or done == total:
+                print(f"  Progress: {done}/{total}", end="\r")
  
     print(f"\n\n{'='*60}")
-    print(f"HASIL:")
-    print(f"  OK      : {ok_count}")
-    print(f"  Corrupt : {len(corrupt)}")
+ 
+    # ── Statistik resolusi ────────────────────────────────────────────────
+    ok_results = [r for r in results if r["ok"]]
+    bad_results = [r for r in results if not r["ok"]]
+ 
+    if ok_results:
+        widths  = [r["width"]  for r in ok_results]
+        heights = [r["height"] for r in ok_results]
+        fsizes  = [r["filesize_mb"] for r in ok_results]
+        modes   = {}
+        for r in ok_results:
+            modes[r["mode"]] = modes.get(r["mode"], 0) + 1
+ 
+        print(f"STATISTIK DATASET:")
+        print(f"  Total gambar   : {total}")
+        print(f"  OK             : {len(ok_results)}")
+        print(f"  Error/Corrupt  : {len(bad_results)}")
+        print(f"")
+        print(f"  Resolusi:")
+        print(f"    Min  : {min(widths)} x {min(heights)}")
+        print(f"    Max  : {max(widths)} x {max(heights)}")
+        print(f"    Mean : {sum(widths)//len(widths)} x {sum(heights)//len(heights)}")
+        print(f"")
+        print(f"  Ukuran file:")
+        print(f"    Min  : {min(fsizes):.2f} MB")
+        print(f"    Max  : {max(fsizes):.2f} MB")
+        print(f"    Mean : {sum(fsizes)/len(fsizes):.2f} MB")
+        print(f"    Total: {sum(fsizes):.1f} MB")
+        print(f"")
+        print(f"  Mode warna: {modes}")
+ 
+        # Flagging gambar yang sangat besar (> 10 MB atau > 4000px)
+        large = [r for r in ok_results
+                 if r["filesize_mb"] > 10 or r["width"] > 4000 or r["height"] > 4000]
+        if large:
+            print(f"\n  [!] Gambar berukuran sangat besar ({len(large)} file):")
+            for r in sorted(large, key=lambda x: -x["filesize_mb"])[:20]:
+                print(f"      {r['path']}")
+                print(f"        {r['width']}x{r['height']}, {r['filesize_mb']:.1f} MB")
+ 
     print(f"{'='*60}")
  
-    if corrupt:
-        print(f"\nFile corrupt disimpan ke: {args.output}")
+    # ── Simpan daftar error ───────────────────────────────────────────────
+    if bad_results:
         with open(args.output, "w") as f:
-            for path, err in sorted(corrupt):
-                f.write(f"{path}\t{err}\n")
- 
-        print("\nDaftar file corrupt:")
-        for path, err in sorted(corrupt):
-            print(f"  {path}")
-            print(f"    {err}")
+            for r in sorted(bad_results, key=lambda x: x["path"]):
+                f.write(f"{r['path']}\t{r['error']}\n")
+        print(f"\nFile bermasalah disimpan ke: {args.output}")
     else:
-        print("\nSemua gambar OK — tidak ada yang corrupt.")
-        print("Kemungkinan masalah hang bukan dari file gambar.")
-        print("Coba jalankan dengan PYTHONFAULTHANDLER=1 untuk lihat stack trace:")
-        print("  PYTHONFAULTHANDLER=1 python run_patchcore.py ... &")
-        print("  sleep 200 && kill -SIGSEGV <pid>   # kirim signal saat stuck")
+        print(f"\nSemua gambar dapat dibaca.")
+ 
+        # Kalau tidak ada yang corrupt tapi training tetap hang,
+        # kemungkinan masalahnya bukan di file
+        print(f"\nKarena tidak ada gambar corrupt, hang kemungkinan disebabkan:")
+        print(f"  1. to_tensor() lambat pada gambar resolusi sangat tinggi")
+        print(f"     → Pastikan resolusi Max di atas tidak terlalu besar")
+        print(f"  2. FAISS memory issue saat coreset sampling")
+        print(f"     → Coba tambah --coreset_percentage 0.01")
+        print(f"  3. Memory leak di feature aggregation loop")
+        print(f"     → Coba kurangi --batch_size ke 2")
+ 
  
 if __name__ == "__main__":
     main()

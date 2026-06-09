@@ -62,27 +62,42 @@ class MVTecDataset(torch.utils.data.Dataset):
 
         self.imagesize = (3, imagesize, imagesize)
 
+    @staticmethod
+    def _safe_open(path, mode="RGB"):
+        """
+        Buka gambar dan paksa decode pixel sekarang (bukan lazy).
+
+        PIL.Image.open() secara default adalah lazy — pixel baru di-decode
+        saat pertama kali diakses (misalnya di to_tensor()). Kalau ada
+        masalah di file (truncated, encoding aneh, EXIF besar), decode
+        bisa hang tanpa error di to_tensor().
+
+        Solusi: panggil .load() segera setelah open() agar decode terjadi
+        di sini, di dalam try/except, bukan di dalam transform pipeline.
+        """
+        img = PIL.Image.open(path)
+        img.load()          # paksa decode pixel sekarang — tidak lazy lagi
+        return img.convert(mode)
+
     def __getitem__(self, idx):
         classname, anomaly, image_path, mask_path = self.data_to_iterate[idx]
 
-        # ── Load image dengan fallback ke gambar hitam jika corrupt ──────
+        # ── Load & decode image sekarang (bukan lazy) ────────────────────
         try:
-            image = PIL.Image.open(image_path).convert("RGB")
+            image = self._safe_open(image_path, "RGB")
             image = self.transform_img(image)
-            _image_ok = True
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning(
-                "Gambar corrupt/tidak bisa dibaca (idx=%d): %s — %s",
+                "Gambar tidak bisa dibaca (idx=%d): %s — %s — diganti blank.",
                 idx, image_path, e,
             )
             blank = PIL.Image.new("RGB", (self.imagesize[1], self.imagesize[2]), color=0)
             image = self.transform_img(blank)
-            _image_ok = False
 
         if self.split == "test" and mask_path is not None:
             try:
-                mask = PIL.Image.open(mask_path)
+                mask = self._safe_open(mask_path, "L")
                 mask = self.transform_mask(mask)
             except Exception:
                 mask = torch.zeros([1, *image.size()[1:]])
