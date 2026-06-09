@@ -6,6 +6,7 @@ mvtec_anomaly_detection/
 results/
 evaluated_results/
 inference_results/
+threshold.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

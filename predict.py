@@ -51,7 +51,6 @@ def load_patchcore(model_dir: str, device: torch.device) -> patchcore.PatchCore:
         target_embed_dimension   = params.get("target_embed_dimension", 1024),
         patchsize                = params.get("patchsize", 3),
         patchstride              = params.get("patchstride", 1),
-        anomaly_scorer_num_nn    = params.get("anomaly_scorer_num_nn", 1),
         featuresampler           = sampler.IdentitySampler(),
         nn_method                = common.FaissNN(False, 8),
     )

@@ -147,6 +147,7 @@ class PatchCore(torch.nn.Module):
             features_dict = self._get_raw_features(images)
 
         features = [features_dict[layer] for layer in self.layers_to_extract_from]
+        features = [_to_spatial(x) for x in features]
 
         features = [
             self.patch_maker.patchify(x, return_spatial_info=True) for x in features
@@ -309,6 +310,33 @@ class PatchCore(torch.nn.Module):
         del patchcore_params["backbone.name"]
         self.load(**patchcore_params, device=device, nn_method=nn_method)
         self.anomaly_scorer.load(load_path, prepend)
+
+def _to_spatial(x: torch.Tensor) -> torch.Tensor:
+    if x.ndim == 4:
+        return x 
+
+    if x.ndim == 3:
+        import math
+        B, N, D = x.shape
+        patch_tokens = x[:, 1:, :]          # [B, N-1, D]
+        n_patches = patch_tokens.shape[1]
+        grid = int(math.isqrt(n_patches))
+
+        if grid * grid != n_patches:
+            raise ValueError(
+                f"ViT output memiliki {n_patches} patch tokens yang tidak "
+                f"bisa di-reshape ke grid persegi (sqrt={grid:.2f}). "
+                f"Pastikan imagesize adalah kelipatan patch size ViT (16)."
+            )
+
+        # [B, N-1, D] → [B, grid, grid, D] → [B, D, grid, grid]
+        spatial = patch_tokens.reshape(B, grid, grid, D)
+        spatial = spatial.permute(0, 3, 1, 2).contiguous()
+        return spatial  # [B, D, grid, grid]
+
+    raise ValueError(
+        f"Feature tensor harus 3D [B,N,D] atau 4D [B,C,H,W], dapat shape: {x.shape}"
+    )
 
 
 class PatchMaker:

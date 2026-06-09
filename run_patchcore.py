@@ -585,7 +585,7 @@ def run(args: argparse.Namespace) -> None:
         device = torch.device("cpu")
 
     if is_main_process():
-        run_save_path = utils.create_storage_folder(args.log_project, args.log_group)
+        run_save_path = utils.create_storage_folder(args.log_project)
         mode_str = "DDP" if ddp_mode else ("DataParallel" if dp_mode else "Single-GPU/CPU")
         LOGGER.info("Save path : %s", run_save_path)
         LOGGER.info("Mode      : %s | Device: %s", mode_str, device)

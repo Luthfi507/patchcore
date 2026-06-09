@@ -86,8 +86,8 @@ def plot_segmentation_images(
 def create_storage_folder(
     project_folder
 ):
-    os.makedirs("result", exist_ok=True)
-    project_path = os.path.join("result", project_folder)
+    os.makedirs("results", exist_ok=True)
+    project_path = os.path.join("results", project_folder)
     
     os.makedirs(project_path, exist_ok=True)
     return project_path
