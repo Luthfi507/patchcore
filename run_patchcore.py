@@ -176,11 +176,6 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--patchsize_aggregate", "-pa", nargs="+", type=int, default=[])
     pc.add_argument("--faiss_on_gpu",      action="store_true")
     pc.add_argument("--faiss_num_workers", type=int, default=8)
-
-    # --- MLflow ---
-    ml = p.add_argument_group("mlflow")
-    ml.add_argument("--no_mlflow", action="store_true")
-
     return p
 
 

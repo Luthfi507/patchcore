@@ -55,9 +55,6 @@ def _mlflow_log_final(result_collect: list):
 
 def run_mlflow(args: argparse.Namespace, run_save_path: str, result_collect: list):
     _mlflow_setup(args)
-
-    if not getattr(args, "no_mlflow", False):
-        return
     
     with mlflow.start_run():
         LOGGER.info("MLflow run started: %s", mlflow.active_run().info.run_id)
