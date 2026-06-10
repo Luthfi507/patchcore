@@ -17,6 +17,8 @@ timm
 numpy==1.26.4
 pytest
 opencv-python
-dotenv
+loguru
 mlflow==2.3.2
 setuptools==80.10.2
+google-cloud-storage
+protobuf==4.25.8
