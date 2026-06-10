@@ -1,38 +1,3 @@
-"""
-PatchCore anomaly detection pipeline — Multi-GPU + Optimized DataLoader.
-
-Strategi multi-GPU:
-
-  DP  (--gpu 0 1, tanpa torchrun)
-      Menggunakan MultiGPUFeatureExtractor: batch dibagi manual ke tiap GPU,
-      masing-masing GPU punya NetworkFeatureAggregator + ForwardHook sendiri,
-      dijalankan paralel via ThreadPoolExecutor. Hasil di-concat di GPU-0.
-      (torch.nn.DataParallel tidak dipakai karena ForwardHook + exception
-      tidak kompatibel dengan cara DP mereplikasi modul.)
-
-  DDP (torchrun --nproc_per_node=N)
-      Setiap proses mengelola 1 GPU. DistributedSampler membagi data.
-      Backbone di-wrap DistributedDataParallel.
-
-  CPU → fallback otomatis.
-
-Optimasi DataLoader (semua mode):
-  • persistent_workers  — worker tidak di-respawn tiap iterasi dataset
-  • prefetch_factor      — tiap worker antri N batch di RAM CPU
-  • DataPrefetcher       — transfer batch ke GPU di CUDA stream terpisah
-    (overlap CPU→GPU dengan komputasi GPU, persis YOLO)
-
-Cara pakai:
-  # Single GPU
-  python run_patchcore.py --gpu 0 --data_path /data ...
-
-  # Multi-GPU DP (2 GPU, satu proses)
-  python run_patchcore.py --gpu 0 1 --data_path /data ...
-
-  # Multi-GPU DDP (2 GPU via torchrun, RECOMMENDED)
-  torchrun --nproc_per_node=2 run_patchcore.py --gpu 0 1 --data_path /data ...
-"""
-
 import argparse
 import contextlib
 import logging
@@ -47,6 +12,7 @@ from torch.utils.data import DistributedSampler
 
 from src.patchcore import patchcore, backbones, common, sampler, metrics, utils
 from src.patchcore.datasets.mvtec import MVTecDataset
+from src.helper import ml_logs
 
 LOGGER = logging.getLogger(__name__)
 
@@ -165,18 +131,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--gpu", type=int, nargs="+", default=[0], metavar="GPU",
                    help="GPU id(s). Contoh: --gpu 0 1 2 3")
     p.add_argument("--seed",        type=int, default=0)
-    p.add_argument("--log_group",   type=str, default="group")
     p.add_argument("--log_project", type=str, default="project")
     p.add_argument("--local_rank",  type=int, default=-1,
                    help="Diisi otomatis oleh torchrun.")
 
     # --- Dataset ---
     ds = p.add_argument_group("dataset")
-    ds.add_argument("--data_path",       type=str,   required=True)
+    ds.add_argument("--data_path", "-d",       type=str,   required=True)
     ds.add_argument("--train_val_split", type=float, default=1.0)
-    ds.add_argument("--batch_size",      type=int,   default=2,
+    ds.add_argument("--batch_size", "-bs",      type=int,   default=16,
                     help="Batch size per GPU.")
-    ds.add_argument("--num_workers",     type=int,   default=8,
+    ds.add_argument("--num_workers", "-nw",     type=int,   default=8,
                     help="Jumlah subprocess worker per DataLoader.")
     ds.add_argument("--prefetch_factor", type=int,   default=2,
                     help="Berapa batch yang di-prefetch per worker (>=2). "
@@ -192,8 +157,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- PatchCore model ---
     pc = p.add_argument_group("patchcore")
-    pc.add_argument("--backbone_names",          "-b",  nargs="+", type=str, default=[])
-    pc.add_argument("--layers_to_extract_from",  "-le", nargs="+", type=str, default=[])
+    pc.add_argument("--backbone_names",          "-b",  nargs="+", type=str, default=['resnet50'])
+    pc.add_argument("--layers_to_extract_from",  "-le", nargs="+", type=str, default=['layer1'])
     pc.add_argument("--pretrain_embed_dimension", type=int, default=1024)
     pc.add_argument("--target_embed_dimension",   type=int, default=1024)
     pc.add_argument("--preprocessing", type=str, default="mean", choices=["mean", "conv"])
@@ -211,6 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--patchsize_aggregate", "-pa", nargs="+", type=int, default=[])
     pc.add_argument("--faiss_on_gpu",      action="store_true")
     pc.add_argument("--faiss_num_workers", type=int, default=8)
+
+    # --- MLflow ---
+    ml = p.add_argument_group("mlflow")
+    ml.add_argument("--no_mlflow", action="store_true")
 
     return p
 
@@ -233,15 +202,12 @@ def _make_loader(dataset, batch_size: int, num_workers: int,
 
     prefetch_factor=N
         Tiap worker men-queue N batch berikutnya di memori CPU sebelum
-        diminta. Nilai default PyTorch adalah 2; naikkan ke 4 jika pipeline
-        CPU-bound (banyak augmentasi berat) dan RAM mencukupi.
+        diminta.
 
     pin_memory=True
         Alokasikan batch di page-locked (pinned) memory.
         Transfer dari pinned memory ke GPU jauh lebih cepat karena
         DMA dapat langsung mengakses tanpa copy tambahan.
-        Ini adalah syarat wajib agar non_blocking=True di DataPrefetcher
-        benar-benar overlap dengan komputasi GPU.
     """
     use_pin_memory = torch.cuda.is_available() and num_workers > 0
     return torch.utils.data.DataLoader(
@@ -263,15 +229,6 @@ def get_dataloaders(args: argparse.Namespace, seed: int,
     """
     Buat DataLoader untuk setiap sub-dataset, lalu bungkus dengan
     DataPrefetcher supaya transfer CPU→GPU overlap dengan komputasi.
-
-    Hierarki paralelisme yang terbentuk:
-      ┌─────────────────────────────────────────────────────┐
-      │  DataPrefetcher  (CUDA stream background transfer)  │  ← lapisan 3
-      │    DataLoader                                       │  ← lapisan 2
-      │      num_workers subprocess  (baca + transform)     │  ← lapisan 1
-      │      prefetch_factor batch per worker               │
-      │      DistributedSampler (mode DDP)                  │
-      └─────────────────────────────────────────────────────┘
     """
     dataloaders = []
     subdatasets = sorted([
@@ -720,9 +677,9 @@ def run(args: argparse.Namespace) -> None:
             run_save_path, scores_list,
             column_names=metric_names, row_names=dataset_names,
         )
+        ml_logs.run_mlflow(args, run_save_path, result_collect)
 
     teardown_ddp()
-
 
 # ---------------------------------------------------------------------------
 # Save helpers
