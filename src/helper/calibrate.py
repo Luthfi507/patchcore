@@ -6,6 +6,7 @@ from PIL import Image
 from torchvision import transforms
 from loguru import logger
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 EXTS = [".png", ".jpg", ".pneg"]
 
@@ -17,23 +18,40 @@ DEFAULT_TRANSFORM = transforms.Compose([
                          std=[0.229, 0.224, 0.225]),
 ])
 
-def score_dir(model, folder):
+def score_dir(model, folder, max_workers=8):
     fname = Path(folder).name
     paths = sorted([
-        os.path.join(folder, f) for f in os.listdir(folder)
+        os.path.join(folder, f)
+        for f in os.listdir(folder)
         if os.path.splitext(f)[1].lower() in EXTS
     ])
+
     if not paths:
         raise ValueError(f"No found image in {folder}")
-    
-    scores = []
-    for p in tqdm(paths, f'Scoring {fname}'):
-        img = Image.open(p)
-        img.load()
-        tensor = DEFAULT_TRANSFORM(img).unsqueeze(0)
 
+    def process(path):
+        img = Image.open(path)
+        img.load()
+
+        tensor = DEFAULT_TRANSFORM(img).unsqueeze(0)
         r = model.predict_tensor(tensor)
-        scores.append(r['score'])
+
+        return path, r["score"]
+
+    scores = [None] * len(paths)
+    path_to_idx = {p: i for i, p in enumerate(paths)}
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process, p) for p in paths]
+
+        for future in tqdm(
+            as_completed(futures),
+            total=len(futures),
+            desc=f"Scoring {fname}"
+        ):
+            path, score = future.result()
+            scores[path_to_idx[path]] = score
+
     return scores
 
 def find(model, good_dir: str, defect_dir: str = None, method: Literal['percentile', 'youden'] = 'youden', percentile: float = 85.0) -> dict:

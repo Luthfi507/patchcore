@@ -7,6 +7,7 @@ from typing import List
 import faiss
 import numpy as np
 import scipy.ndimage as ndimage
+import threading
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
@@ -305,6 +306,7 @@ class _PatchCoreInference:
         self.device      = device
         self.patch_maker = _PatchMaker(patchsize, stride=patchstride)
         self._layers     = layers
+        self._lock       = threading.Lock()
 
         self._aggregator = _NetworkFeatureAggregator(backbone, layers, device)
         self._aggregator.eval()
@@ -356,17 +358,18 @@ class _PatchCoreInference:
         images = image_tensor.to(torch.float).to(self.device)
         B      = images.shape[0]
 
-        with torch.no_grad():
-            features, patch_shapes = self._embed(images)
-            patch_scores = self._scorer.predict([features])[0]
-            image_scores = self.patch_maker.unpatch_scores(patch_scores, batchsize=B)
-            image_scores = image_scores.reshape(*image_scores.shape[:2], -1)
-            image_scores = self.patch_maker.score(image_scores)
+        with self._lock:
+            with torch.no_grad():
+                features, patch_shapes = self._embed(images)
+                patch_scores = self._scorer.predict([features])[0]
+                image_scores = self.patch_maker.unpatch_scores(patch_scores, batchsize=B)
+                image_scores = image_scores.reshape(*image_scores.shape[:2], -1)
+                image_scores = self.patch_maker.score(image_scores)
 
-            scales     = patch_shapes[0]
-            seg        = self.patch_maker.unpatch_scores(patch_scores, batchsize=B)
-            seg        = seg.reshape(B, scales[0], scales[1])
-            masks      = self._segmentor.convert_to_segmentation(seg)
+                scales     = patch_shapes[0]
+                seg        = self.patch_maker.unpatch_scores(patch_scores, batchsize=B)
+                seg        = seg.reshape(B, scales[0], scales[1])
+                masks      = self._segmentor.convert_to_segmentation(seg)
 
         return {
             "score": float(image_scores[0]),
@@ -439,7 +442,7 @@ def predict_image(model: _PatchCoreInference,
     return result
 
 if __name__ == "__main__":
-    from helper.calibrate import find
+    from src.helper.calibrate import find
     model = load_model('results/project/models/mvtc_toothbrush')
     scores = find(model, 'mvtec_anomaly_detection/dataset/toothbrush/train/good/', 'mvtec_anomaly_detection/dataset/toothbrush/test/defective/')
     result = predict_image(model, 'mvtec_anomaly_detection/dataset/toothbrush/test/good/000.png', threshold=scores)
