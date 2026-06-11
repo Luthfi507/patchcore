@@ -386,65 +386,56 @@ _DEFAULT_TRANSFORM = transforms.Compose([
 ])
 
 
-def load_model(model_path: str,
-               device: str = "cpu",
-               prepend: str = "") -> _PatchCoreInference:
-               
-    params_file = os.path.join(model_path, prepend + "patchcore_params.pkl")
-    if not os.path.exists(params_file):
-        raise FileNotFoundError(
-            f"Params tidak ditemukan: {params_file}\n"
-            f"Pastikan model_path menunjuk ke folder yang benar.\n"
-            f"Isi folder: {os.listdir(model_path) if os.path.isdir(model_path) else 'folder tidak ada'}"
+class Predictor:
+    def __init__(self, model_path):
+        self.model_path = model_path
+
+    def load_model(self,
+                device: str = "cpu",
+                prepend: str = "") -> _PatchCoreInference:
+                
+        params_file = os.path.join(self.model_path, prepend + "patchcore_params.pkl")
+
+        with open(params_file, "rb") as f:
+            params = pickle.load(f)
+
+        LOGGER.info("Loading model: backbone=%s layers=%s",
+                    params["backbone.name"], params["layers_to_extract_from"])
+
+        backbone      = _load_backbone(params["backbone.name"])
+        backbone.name = params["backbone.name"]
+
+        _device  = torch.device(device)
+        backbone = backbone.to(_device).eval()
+
+        return _PatchCoreInference(
+            backbone           = backbone,
+            layers             = params["layers_to_extract_from"],
+            device             = _device,
+            input_shape        = params["input_shape"],
+            pretrain_embed_dim = params["pretrain_embed_dimension"],
+            target_embed_dim   = params["target_embed_dimension"],
+            patchsize          = params["patchsize"],
+            patchstride        = params["patchstride"],
+            n_nn               = params["anomaly_scorer_num_nn"],
+            faiss_index_path   = self.model_path,
+            prepend            = prepend,
         )
 
-    with open(params_file, "rb") as f:
-        params = pickle.load(f)
+    def predict_image(self,
+                    image_path: str,
+                    transform=None,
+                    threshold: float = None) -> dict:
+        model = self.load_model()
+        tf = transform or _DEFAULT_TRANSFORM
 
-    LOGGER.info("Loading model: backbone=%s layers=%s",
-                params["backbone.name"], params["layers_to_extract_from"])
+        img = Image.open(image_path).convert("RGB")
+        img.load()                              # eager decode, cegah lazy-load hang
+        tensor = tf(img).unsqueeze(0)           # [1, C, H, W]
 
-    backbone      = _load_backbone(params["backbone.name"])
-    backbone.name = params["backbone.name"]
-
-    _device  = torch.device(device)
-    backbone = backbone.to(_device).eval()
-
-    return _PatchCoreInference(
-        backbone           = backbone,
-        layers             = params["layers_to_extract_from"],
-        device             = _device,
-        input_shape        = params["input_shape"],
-        pretrain_embed_dim = params["pretrain_embed_dimension"],
-        target_embed_dim   = params["target_embed_dimension"],
-        patchsize          = params["patchsize"],
-        patchstride        = params["patchstride"],
-        n_nn               = params["anomaly_scorer_num_nn"],
-        faiss_index_path   = model_path,
-        prepend            = prepend,
-    )
-
-
-def predict_image(model: _PatchCoreInference,
-                  image_path: str,
-                  transform=None,
-                  threshold: float = None) -> dict:
-    tf = transform or _DEFAULT_TRANSFORM
-
-    img = Image.open(image_path).convert("RGB")
-    img.load()                              # eager decode, cegah lazy-load hang
-    tensor = tf(img).unsqueeze(0)           # [1, C, H, W]
-
-    result = model.predict_tensor(tensor)
-    result["image_path"] = image_path
-    result["is_anomaly"] = (
-        bool(result["score"] > threshold) if threshold is not None else None
-    )
-    return result
-
-if __name__ == "__main__":
-    from src.helper.calibrate import find
-    model = load_model('results/project/models/mvtc_toothbrush')
-    scores = find(model, 'mvtec_anomaly_detection/dataset/toothbrush/train/good/', 'mvtec_anomaly_detection/dataset/toothbrush/test/defective/')
-    result = predict_image(model, 'mvtec_anomaly_detection/dataset/toothbrush/test/good/000.png', threshold=scores)
-    print(result)
+        result = model.predict_tensor(tensor)
+        result["image_path"] = image_path
+        result["is_anomaly"] = (
+            bool(result["score"] > threshold) if threshold is not None else None
+        )
+        return result
