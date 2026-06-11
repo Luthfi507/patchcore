@@ -1,16 +1,49 @@
-import logging
+from loguru import logger
 from dotenv import load_dotenv
 import mlflow
 import argparse
+import os
+import shutil
+from time import time
+from predict import Predictor
 
 load_dotenv()
-LOGGER = logging.getLogger(__name__)
+
+file_path = os.path.abspath(__file__)
+project_dir = os.path.abspath(
+    os.path.join(os.path.dirname(file_path), '..', '..')
+)
+pred_path = os.path.join(project_dir, 'predict.py')
+shutil.rmtree('mlflow_model', True)
+
+class Wrapper(mlflow.pyfunc.PythonModel):
+    def load_context(self, context):
+        model_dir = context.artifacts['model_dir']
+        self.predictor = Predictor(
+            model_dir
+        )
+        print(f"Model loaded from {model_dir}")
+
+    def predict(self, context, model_input):
+        start = time()
+        image_path = model_input['image_path']
+        threshold = model_input['threshold']
+
+        pred = self.predictor.predict_image(
+            image_path,
+            threshold=threshold
+        )
+
+        total_time = time() - start
+        print(f"Image predicted in {total_time:.4f}")
+        return pred
 
 def _mlflow_setup(args: argparse.Namespace):
     experiment = "patchcore experiment"
     mlflow.set_experiment(experiment)
-    LOGGER.info("MLflow tracking URI: %s", mlflow.get_tracking_uri())
-    LOGGER.info("MLflow experiment: %s", experiment)
+    tracking_uri = mlflow.get_tracking_uri()
+    logger.info(f"MLflow tracking URI: {tracking_uri}", )
+    logger.info(f"MLflow experiment: {experiment}")
 
 def _mlflow_log_params(args: argparse.Namespace):    
     params = {
@@ -54,10 +87,26 @@ def _mlflow_log_final(result_collect: list):
             mlflow.log_metric(f"mean/{metric}", sum(vals) / len(vals))
 
 def run_mlflow(args: argparse.Namespace, run_save_path: str, result_collect: list):
+    start = time()
     _mlflow_setup(args)
+
+    conda_env = {
+        "name": "default",
+        "channels": ["defaults"],
+        "dependencies": [
+            "python>=3.10.0",
+            {
+                "pip": [
+                    "mlflow==2.3.2",
+                    "setuptools==80.10.2",
+                    "protobuf==4.25.8"
+                ]
+            }
+        ]
+    }
     
     with mlflow.start_run():
-        LOGGER.info("MLflow run started: %s", mlflow.active_run().info.run_id)
+        logger.info("MLflow run started")
 
         _mlflow_log_params(args)
 
@@ -66,6 +115,16 @@ def run_mlflow(args: argparse.Namespace, run_save_path: str, result_collect: lis
             _mlflow_log_metrics(dataset_name, result)
         
         _mlflow_log_final(result_collect)
+        mlflow.log_artifact(os.path.join(run_save_path, 'result.csv'))
 
-        mlflow.log_artifacts(run_save_path)
-        LOGGER.info("MLflow run end.")
+        model_dir = os.path.join(run_save_path, 'models', 'mvtc_screen')
+        mlflow.pyfunc.log_model(
+            artifact_path='pyfunc',
+            python_model=Wrapper(),
+            artifacts={'model_dir': model_dir},
+            code_path=[pred_path],
+            conda_env=conda_env
+        )
+
+        total_time = time() - start
+        logger.success(f"MLflow run end in {total_time:.4f}")
