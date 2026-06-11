@@ -132,7 +132,10 @@ class _ForwardHook:
         self.is_last    = (layer_name == last_layer)
 
     def __call__(self, module, input, output):
-        self.hook_dict[self.layer_name] = output
+        outputs = getattr(self.hook_dict, "outputs", None)
+        if outputs is None:
+            return
+        outputs[self.layer_name] = output
         if self.is_last:
             raise _LastLayerReached()
 
@@ -143,7 +146,7 @@ class _NetworkFeatureAggregator(torch.nn.Module):
         self.layers_to_extract_from = layers_to_extract_from
         self.backbone = backbone
         self.device   = device
-        self.outputs  = {}
+        self._thread_local = threading.local()
 
         if not hasattr(self.backbone, "hook_handles"):
             self.backbone.hook_handles = []
@@ -151,7 +154,7 @@ class _NetworkFeatureAggregator(torch.nn.Module):
             handle.remove()
 
         for layer in layers_to_extract_from:
-            hook = _ForwardHook(self.outputs, layer, layers_to_extract_from[-1])
+            hook = _ForwardHook(self._thread_local, layer, layers_to_extract_from[-1])
             if "." in layer:
                 block, idx = layer.split(".")
                 net_layer  = self.backbone.__dict__["_modules"][block]
@@ -171,13 +174,13 @@ class _NetworkFeatureAggregator(torch.nn.Module):
         self.to(self.device)
 
     def forward(self, images):
-        self.outputs.clear()
+        self._thread_local.outputs = {}
         with torch.no_grad():
             try:
                 self.backbone(images)
             except _LastLayerReached:
                 pass
-        return self.outputs
+        return self._thread_local.outputs
 
     def feature_dimensions(self, input_shape):
         out = self(torch.ones([1] + list(input_shape)).to(self.device))
@@ -306,7 +309,6 @@ class _PatchCoreInference:
         self.device      = device
         self.patch_maker = _PatchMaker(patchsize, stride=patchstride)
         self._layers     = layers
-        self._lock       = threading.Lock()
 
         self._aggregator = _NetworkFeatureAggregator(backbone, layers, device)
         self._aggregator.eval()
@@ -358,18 +360,17 @@ class _PatchCoreInference:
         images = image_tensor.to(torch.float).to(self.device)
         B      = images.shape[0]
 
-        with self._lock:
-            with torch.no_grad():
-                features, patch_shapes = self._embed(images)
-                patch_scores = self._scorer.predict([features])[0]
-                image_scores = self.patch_maker.unpatch_scores(patch_scores, batchsize=B)
-                image_scores = image_scores.reshape(*image_scores.shape[:2], -1)
-                image_scores = self.patch_maker.score(image_scores)
+        with torch.no_grad():
+            features, patch_shapes = self._embed(images)
+            patch_scores = self._scorer.predict([features])[0]
+            image_scores = self.patch_maker.unpatch_scores(patch_scores, batchsize=B)
+            image_scores = image_scores.reshape(*image_scores.shape[:2], -1)
+            image_scores = self.patch_maker.score(image_scores)
 
-                scales     = patch_shapes[0]
-                seg        = self.patch_maker.unpatch_scores(patch_scores, batchsize=B)
-                seg        = seg.reshape(B, scales[0], scales[1])
-                masks      = self._segmentor.convert_to_segmentation(seg)
+            scales     = patch_shapes[0]
+            seg        = self.patch_maker.unpatch_scores(patch_scores, batchsize=B)
+            seg        = seg.reshape(B, scales[0], scales[1])
+            masks      = self._segmentor.convert_to_segmentation(seg)
 
         return {
             "score": float(image_scores[0]),
