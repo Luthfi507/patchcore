@@ -439,6 +439,8 @@ def predict_image(model: _PatchCoreInference,
     return result
 
 if __name__ == "__main__":
+    from helper.calibrate import find
     model = load_model('results/project/models/mvtc_toothbrush')
-    result = predict_image(model, 'mvtec_anomaly_detection/dataset/toothbrush/test/good/000.png')
+    scores = find(model, 'mvtec_anomaly_detection/dataset/toothbrush/train/good/', 'mvtec_anomaly_detection/dataset/toothbrush/test/defective/')
+    result = predict_image(model, 'mvtec_anomaly_detection/dataset/toothbrush/test/good/000.png', threshold=scores)
     print(result)
