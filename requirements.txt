@@ -1,24 +1,22 @@
 --extra-index-url https://download.pytorch.org/whl/cu124
 
-click>= 8.0.3
-# cudatoolkit>= 10.2
 # faiss-cpu
 faiss-gpu
-matplotlib>= 3.5.0
-pillow>= 8.4.0
-pretrainedmodels>= 0.7.4
-torch>= 1.10.0
-scikit-image>= 0.18.3
-scikit-learn>= 1.0.1
-scipy>= 1.7.1
-torchvision>= 0.11.1
-tqdm>= 4.62.3
+torch
+torchvision
+matplotlib
+pillow
+pretrainedmodels
+scikit-image
+scikit-learn
+scipy
+tqdm
 timm
-numpy==1.26.4
-pytest
+numpy
 opencv-python
 loguru
+pytest
 mlflow==2.3.2
-setuptools==80.10.2
+setuptools==69.5.1
 google-cloud-storage
 protobuf==4.25.8
