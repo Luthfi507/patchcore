@@ -134,6 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log_project", type=str, default="project")
     p.add_argument("--local_rank",  type=int, default=-1,
                    help="Diisi otomatis oleh torchrun.")
+    p.add_argument("--segment", action="store_true")
 
     # --- Dataset ---
     ds = p.add_argument_group("dataset")
@@ -630,10 +631,11 @@ def run(args: argparse.Namespace) -> None:
                     for x in dataloaders["testing"].dataset.data_to_iterate
                 ]
 
-                _save_segmentation_images(
-                    args, dataloaders, run_save_path,
-                    dataset_name, segmentations, scores,
-                )
+                if args.segment:
+                    _save_segmentation_images(
+                        args, dataloaders, run_save_path,
+                        dataset_name, segmentations, scores,
+                    )
 
                 LOGGER.info("Computing evaluation metrics.")
                 auroc = metrics.compute_imagewise_retrieval_metrics(
