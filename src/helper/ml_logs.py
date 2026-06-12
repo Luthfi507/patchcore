@@ -115,7 +115,7 @@ def run_mlflow(args: argparse.Namespace, run_save_path: str, result_collect: lis
             _mlflow_log_metrics(dataset_name, result)
         
         _mlflow_log_final(result_collect)
-        mlflow.log_artifact(os.path.join(run_save_path, 'result.csv'))
+        mlflow.log_artifact(os.path.join(run_save_path, 'results.csv'))
 
         model_dir = os.path.join(run_save_path, 'models', 'mvtc_screen')
         mlflow.pyfunc.log_model(
