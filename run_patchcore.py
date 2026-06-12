@@ -636,6 +636,7 @@ def run(args: argparse.Namespace) -> None:
                         args, dataloaders, run_save_path,
                         dataset_name, segmentations, scores,
                     )
+                _save_patchcore_models(patchcore_list, run_save_path, dataset_name)
 
                 LOGGER.info("Computing evaluation metrics.")
                 auroc = metrics.compute_imagewise_retrieval_metrics(
@@ -661,7 +662,6 @@ def run(args: argparse.Namespace) -> None:
                     if key != "dataset_name":
                         LOGGER.info("%s: %.3f", key, val)
 
-                _save_patchcore_models(patchcore_list, run_save_path, dataset_name)
 
         if is_main_process():
             LOGGER.info("\n\n-----\n")
