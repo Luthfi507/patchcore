@@ -166,7 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--aggregation",   type=str, default="mean", choices=["mean", "mlp"])
     pc.add_argument("--anomaly_scorer_num_nn", type=int, default=5)
     pc.add_argument("--patchsize",   type=int, default=3)
-    pc.add_argument("--patchstride", type=int, default=1,
+    pc.add_argument("--patchstride", type=int, default=4,
                     help="Stride untuk patch extraction. "
                          "Naikkan (mis. 2 atau 4) untuk kurangi jumlah patch "
                          "dan percepat coreset sampling secara signifikan. "
@@ -389,27 +389,6 @@ def get_patchcore_list(args, input_shape, feat_sampler,
 
 
 # ---------------------------------------------------------------------------
-# Score aggregation helpers
-# ---------------------------------------------------------------------------
-
-def _normalize_and_mean(arrays: np.ndarray) -> np.ndarray:
-    mins = arrays.min(axis=-1, keepdims=True)
-    maxs = arrays.max(axis=-1, keepdims=True)
-    return np.mean((arrays - mins) / (maxs - mins), axis=0)
-
-
-def aggregate_scores(raw):
-    return _normalize_and_mean(np.array(raw))
-
-
-def aggregate_segmentations(raw):
-    arr  = np.array(raw)
-    mins = arr.reshape(len(arr), -1).min(axis=-1).reshape(-1, 1, 1, 1)
-    maxs = arr.reshape(len(arr), -1).max(axis=-1).reshape(-1, 1, 1, 1)
-    return np.mean((arr - mins) / (maxs - mins), axis=0)
-
-
-# ---------------------------------------------------------------------------
 # DDP feature gathering
 # ---------------------------------------------------------------------------
 
@@ -605,31 +584,70 @@ def run(args: argparse.Namespace) -> None:
 
             # ── Inference ────────────────────────────────────────────────
             torch.cuda.empty_cache()
-            raw_scores, raw_segs = [], []
-            labels_gt = masks_gt = None
+            labels_gt = None
+            masks_gt = None
+            accum_scores = None
+            accum_segs = None
+            n_ensemble = len(patchcore_list)
 
             for i, pc in enumerate(patchcore_list):
                 torch.cuda.empty_cache()
                 if is_main_process():
-                    LOGGER.info("Embedding test data (%d/%d)", i + 1, len(patchcore_list))
+                    LOGGER.info("Embedding test data (%d/%d)", i + 1, n_ensemble)
                 if is_main_process() or not is_dist_active():
-                    scores, segmentations, labels_gt, masks_gt = pc.predict(
+                    raw_scores, raw_segs, labels_gt_batch, masks_gt_batch = pc.predict(
                         dataloaders["testing"]
                     )
-                    raw_scores.append(scores)
-                    raw_segs.append(segmentations)
+                    # Ground truth is identical across ensemble members;
+                    # fetch only once.
+                    if labels_gt is None:
+                        labels_gt = labels_gt_batch
+                        masks_gt = masks_gt_batch
+
+                    # Streaming ensemble aggregation:
+                    # normalize each member independently, then accumulate.
+                    scores_arr = np.asarray(raw_scores, dtype=np.float64)
+                    s_min, s_max = scores_arr.min(), scores_arr.max()
+                    s_range = s_max - s_min
+                    norm_scores = (
+                        (scores_arr - s_min) / s_range
+                        if s_range > 0
+                        else np.zeros_like(scores_arr)
+                    )
+                    accum_scores = (
+                        norm_scores
+                        if accum_scores is None
+                        else accum_scores + norm_scores
+                    )
+
+                    seg_arr = np.asarray(raw_segs, dtype=np.float64)
+                    flat_arr = seg_arr.reshape(-1)
+                    s_min_s, s_max_s = flat_arr.min(), flat_arr.max()
+                    s_range_s = s_max_s - s_min_s
+                    norm_segs = (
+                        (seg_arr - s_min_s) / s_range_s
+                        if s_range_s > 0
+                        else np.zeros_like(seg_arr)
+                    )
+                    accum_segs = (
+                        norm_segs
+                        if accum_segs is None
+                        else accum_segs + norm_segs
+                    )
+
+                # Clean per-iteration temporaries to free memory early
+                if is_main_process() or not is_dist_active():
+                    del raw_scores, raw_segs, scores_arr, seg_arr, flat_arr
+                    del norm_scores, norm_segs
 
             if is_dist_active():
                 dist.barrier()
 
             if is_main_process() or not is_dist_active():
-                scores        = aggregate_scores(raw_scores)
-                segmentations = aggregate_segmentations(raw_segs)
-
-                anomaly_labels = [
-                    x[1] != "good"
-                    for x in dataloaders["testing"].dataset.data_to_iterate
-                ]
+                scores = accum_scores / n_ensemble
+                segmentations = accum_segs / n_ensemble
+                # Release the accumulated arrays — no longer needed after division
+                del accum_scores, accum_segs
 
                 if args.segment:
                     _save_segmentation_images(
@@ -640,16 +658,20 @@ def run(args: argparse.Namespace) -> None:
 
                 LOGGER.info("Computing evaluation metrics.")
                 auroc = metrics.compute_imagewise_retrieval_metrics(
-                    scores, anomaly_labels
+                    scores, labels_gt
                 )["auroc"]
                 full_pixel_auroc = metrics.compute_pixelwise_retrieval_metrics(
                     segmentations, masks_gt
                 )["auroc"]
                 anomaly_idxs = [i for i, m in enumerate(masks_gt) if np.sum(m) > 0]
-                anomaly_pixel_auroc = metrics.compute_pixelwise_retrieval_metrics(
-                    [segmentations[i] for i in anomaly_idxs],
-                    [masks_gt[i] for i in anomaly_idxs],
-                )["auroc"]
+                # Guard against dataset with zero anomalous masks
+                if anomaly_idxs:
+                    anomaly_pixel_auroc = metrics.compute_pixelwise_retrieval_metrics(
+                        [segmentations[i] for i in anomaly_idxs],
+                        [masks_gt[i] for i in anomaly_idxs],
+                    )["auroc"]
+                else:
+                    anomaly_pixel_auroc = float("nan")
 
                 result = {
                     "dataset_name":       dataset_name,
