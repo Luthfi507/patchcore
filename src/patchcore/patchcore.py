@@ -192,42 +192,90 @@ class PatchCore(torch.nn.Module):
             return _detach(features), patch_shapes
         return _detach(features)
 
-    def fit(self, training_data):
-        self._fill_memory_bank(training_data)
+    def fit(self, training_data, memory_bank_backend="ram", cache_dir=".cache/patchcore", train_segmentation=True):
+        self._fill_memory_bank(training_data, memory_bank_backend=memory_bank_backend, cache_dir=cache_dir, train_segmentation=train_segmentation)
 
-    def _fill_memory_bank(self, input_data):
+    def _fill_memory_bank(self, input_data, memory_bank_backend="ram", cache_dir=".cache/patchcore", train_segmentation=True):
         """
         Ekstrak fitur dari semua gambar training dan bangun FAISS index.
 
-        Gambar bisa datang dari:
-        - DataPrefetcher (sudah di GPU, non_blocking)
-        - DataLoader biasa (di CPU)
-        Keduanya ditangani dengan .to(torch.float).to(self.device).
+        memory_bank_backend: "ram" (default, cepat, boros RAM) atau "disk" (hemat RAM, lambat, cache di .cache/patchcore/)
+        train_segmentation: True (default), jika False hanya image-level anomaly detection (skip patch extraction/segmentasi)
         """
+        import tempfile
+        import shutil
+
         if self._use_multi_gpu:
             self._multi_gpu_aggregator.eval()
         else:
             self.forward_modules.eval()
 
-        features = []
-        with tqdm.tqdm(
-            input_data, desc="Computing support features...", position=1, leave=False
-        ) as data_iterator:
-            for image in data_iterator:
-                if isinstance(image, dict):
-                    image = image["image"]
-                with torch.no_grad():
-                    # Gambar mungkin sudah di GPU (dari DataPrefetcher) —
-                    # .to() idempotent: tidak ada salinan jika sudah di device yang benar.
-                    input_image = image.to(torch.float).to(self.device)
-                    batch_features = self._embed(input_image)
-                # _embed mengembalikan list of numpy arrays (satu per patch)
-                # gunakan np.array() bukan extend agar axis tetap benar
-                features.append(np.array(batch_features))
+        if memory_bank_backend == "ram":
+            features = []
+            with tqdm.tqdm(
+                input_data, desc="Computing support features...", position=1, leave=False
+            ) as data_iterator:
+                for image in data_iterator:
+                    if isinstance(image, dict):
+                        image = image["image"]
+                    with torch.no_grad():
+                        input_image = image.to(torch.float).to(self.device)
+                        batch_features = self._embed(input_image)
+                    features.append(np.array(batch_features))
+            features = np.concatenate(features, axis=0)
+            features = self.featuresampler.run(features)
+            self.anomaly_scorer.fit(detection_features=[features])
+            del features
+        elif memory_bank_backend == "disk":
+            os.makedirs(cache_dir, exist_ok=True)
+            cache_prefix = f"features_{os.getpid()}_{np.random.randint(0, 1e8)}"
+            cache_files = []
+            total = 0
+            with tqdm.tqdm(
+                input_data, desc="Computing support features (disk-backed)...", position=1, leave=False
+            ) as data_iterator:
+                for idx, image in enumerate(data_iterator):
+                    if isinstance(image, dict):
+                        image = image["image"]
+                    with torch.no_grad():
+                        input_image = image.to(torch.float).to(self.device)
+                        batch_features = self._embed(input_image)
+                    arr = np.array(batch_features)
+                    fname = os.path.join(cache_dir, f"{cache_prefix}_batch{idx}.npy")
+                    np.save(fname, arr)
+                    cache_files.append(fname)
+                    total += arr.shape[0]
+            # Streaming concatenate
+            features_shape = None
+            for fname in cache_files:
+                arr = np.load(fname, mmap_mode="r")
+                if features_shape is None:
+                    features_shape = (total,) + arr.shape[1:]
+                    features = np.memmap(os.path.join(cache_dir, f"{cache_prefix}_all.npy"), dtype=arr.dtype, mode="w+", shape=features_shape)
+                    offset = 0
+                features[offset:offset+arr.shape[0]] = arr
+                offset += arr.shape[0]
+            features = np.array(features)
+            # Coreset sampling
+            features = self.featuresampler.run(features)
+            self.anomaly_scorer.fit(detection_features=[features])
+            # Cleanup
+            for fname in cache_files:
+                try:
+                    os.remove(fname)
+                except Exception:
+                    pass
+            try:
+                os.remove(os.path.join(cache_dir, f"{cache_prefix}_all.npy"))
+            except Exception:
+                pass
+            del features
+        else:
+            raise ValueError(f"Unknown memory_bank_backend: {memory_bank_backend}")
 
-        features = np.concatenate(features, axis=0)
-        features = self.featuresampler.run(features)
-        self.anomaly_scorer.fit(detection_features=[features])
+        # Optional: skip segmentation training if not requested
+        if not train_segmentation:
+            self.anomaly_segmentor = None
 
     def predict(self, data):
         # Terima DataLoader biasa ATAU DataPrefetcher wrapper

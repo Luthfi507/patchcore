@@ -177,6 +177,11 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--patchsize_aggregate", "-pa", nargs="+", type=int, default=[])
     pc.add_argument("--faiss_on_gpu",      action="store_true")
     pc.add_argument("--faiss_num_workers", type=int, default=8)
+    # --- Memory bank backend & segmentation training flags ---
+    pc.add_argument("--memory_bank_backend", type=str, default="ram", choices=["ram", "disk"],
+                    help="Backend penyimpanan fitur patch training: 'ram' (default, cepat, boros RAM) atau 'disk' (hemat RAM, lambat, cache di .cache/patchcore/)")
+    pc.add_argument("--train_segmentation", action="store_true", default=False,
+                    help="Jika diset, lakukan training & evaluasi segmentasi (pixel-level). Jika tidak, hanya image-level anomaly detection.")
     return p
 
 
