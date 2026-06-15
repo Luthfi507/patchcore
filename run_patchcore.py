@@ -13,6 +13,7 @@ from torch.utils.data import DistributedSampler
 from src.patchcore import patchcore, backbones, common, sampler, metrics, utils
 from src.patchcore.datasets.mvtec import MVTecDataset
 from src.helper import ml_logs
+from evaluate import PatchCoreEvaluator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -24,20 +25,20 @@ SAMPLER_MAP = {
 
 
 # ---------------------------------------------------------------------------
-# DataPrefetcher  (mirip YOLO utils/dataloaders.py InfiniteDataLoader)
+# DataPrefetcher  (similar to YOLO utils/dataloaders.py InfiniteDataLoader)
 # ---------------------------------------------------------------------------
 
 class DataPrefetcher:
-    """
-    Membungkus DataLoader dengan transfer CPU→GPU non-blocking.
+    """Wrap a DataLoader and move batches to GPU in a non-blocking way.
 
-    Menggunakan .to(device, non_blocking=True) untuk memindahkan tensor ke GPU.
-    pin_memory=True di DataLoader memastikan DMA transfer yang efisien.
-    persistent_workers=True mencegah respawn subprocess tiap iterasi.
+    Uses ``.to(device, non_blocking=True)`` to move tensors to the GPU.
+    ``pin_memory=True`` in the DataLoader enables efficient DMA transfers.
+    ``persistent_workers=True`` avoids respawning subprocesses every iteration.
 
-    PENTING: Tidak menggunakan CUDA stream terpisah karena kombinasi
-    persistent_workers + multi-stream dapat menyebabkan deadlock pada
-    beberapa versi PyTorch (worker menunggu di stream A, main thread di stream B).
+    IMPORTANT: We deliberately **do not** use a separate CUDA stream here.
+    The combination of ``persistent_workers`` and multiple CUDA streams can
+    cause deadlocks on some PyTorch versions (e.g. worker waits on stream A,
+    main thread waits on stream B).
     """
 
     def __init__(self, loader: torch.utils.data.DataLoader,
@@ -47,7 +48,7 @@ class DataPrefetcher:
         self.is_cuda = device.type == "cuda"
         self.dataset = loader.dataset
         self.sampler = getattr(loader, "sampler", None)
-        # Propagasikan atribut name dari loader asli jika ada
+        # Propagate the ``name`` attribute from the original loader if present
         if hasattr(loader, "name"):
             self.name = loader.name
 
@@ -62,7 +63,7 @@ class DataPrefetcher:
         return len(self.loader)
 
     def _to_device(self, batch):
-        """Pindahkan semua tensor ke device dengan non_blocking=True."""
+        """Move all tensors in a batch to the configured device (non-blocking)."""
         if isinstance(batch, dict):
             return {
                 k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
@@ -192,23 +193,21 @@ def build_parser() -> argparse.ArgumentParser:
 def _make_loader(dataset, batch_size: int, num_workers: int,
                  prefetch_factor: int, sampler_obj=None,
                  shuffle: bool = False) -> torch.utils.data.DataLoader:
-    """
-    Factory tunggal untuk semua DataLoader dengan pengaturan optimal:
+    """Single factory for all DataLoaders with optimized settings.
 
     persistent_workers=True
-        Worker subprocess tetap hidup antar iterasi dataset.
-        Tanpa ini, PyTorch me-respawn semua worker tiap kali __iter__
-        dipanggil ulang — overhead startup yang terasa pada dataset kecil
-        seperti MVTec per-class.
+        Keep worker subprocesses alive across iterations. Without this,
+        PyTorch respawns all workers each time ``__iter__`` is called, which
+        adds noticeable startup overhead on small per-class datasets like MVTec.
 
     prefetch_factor=N
-        Tiap worker men-queue N batch berikutnya di memori CPU sebelum
-        diminta.
+        Each worker preloads N upcoming batches into CPU memory before they
+        are requested.
 
     pin_memory=True
-        Alokasikan batch di page-locked (pinned) memory.
-        Transfer dari pinned memory ke GPU jauh lebih cepat karena
-        DMA dapat langsung mengakses tanpa copy tambahan.
+        Allocate batches in page-locked (pinned) memory. Transfers from pinned
+        memory to GPU are much faster because DMA can access them without an
+        additional copy.
     """
     use_pin_memory = torch.cuda.is_available() and num_workers > 0
     return torch.utils.data.DataLoader(
@@ -227,9 +226,8 @@ def _make_loader(dataset, batch_size: int, num_workers: int,
 def get_dataloaders(args: argparse.Namespace, seed: int,
                     device: torch.device,
                     ddp_mode: bool = False) -> list[dict]:
-    """
-    Buat DataLoader untuk setiap sub-dataset, lalu bungkus dengan
-    DataPrefetcher supaya transfer CPU→GPU overlap dengan komputasi.
+    """Create DataLoaders for each sub-dataset and wrap them with
+    :class:`DataPrefetcher` so CPU→GPU transfer overlaps with computation.
     """
     dataloaders = []
     subdatasets = sorted([
@@ -251,7 +249,7 @@ def get_dataloaders(args: argparse.Namespace, seed: int,
 
         # ── Training loader ──────────────────────────────────────────────
         if ddp_mode:
-            # DistributedSampler: tiap rank hanya dapat slice datanya sendiri
+            # DistributedSampler: each rank only sees its own slice of the data
             train_sampler = DistributedSampler(
                 train_ds,
                 num_replicas=get_world_size(),
@@ -262,7 +260,7 @@ def get_dataloaders(args: argparse.Namespace, seed: int,
             train_bs = args.batch_size          # per-GPU
         else:
             train_sampler = None
-            # DataParallel: batch diperbesar sesuai jumlah GPU
+            # Manual multi-GPU: increase batch size according to the number of GPUs
             train_bs = args.batch_size * max(1, len(args.gpu))
 
         train_loader = _make_loader(
@@ -278,7 +276,7 @@ def get_dataloaders(args: argparse.Namespace, seed: int,
             args.num_workers, args.prefetch_factor,
         )
 
-        # ── Validation loader (opsional) ─────────────────────────────────
+        # ── Optional validation loader ───────────────────────────────────
         val_loader = None
         if args.train_val_split < 1:
             val_ds = MVTecDataset(
@@ -291,9 +289,11 @@ def get_dataloaders(args: argparse.Namespace, seed: int,
                 args.num_workers, args.prefetch_factor,
             )
 
-        # ── Bungkus semua loader dengan DataPrefetcher ───────────────────
-        # DataPrefetcher menggunakan CUDA stream terpisah untuk memindahkan
-        # batch ke GPU di background — CPU dan GPU bekerja bersamaan.
+        # ── Wrap all loaders with DataPrefetcher ─────────────────────────
+        # DataPrefetcher moves batches to the GPU in a non-blocking way
+        # using a combination of pinned memory (pin_memory=True) and
+        # .to(device, non_blocking=True). This allows CPU→GPU transfer to
+        # overlap with computation without needing a separate CUDA stream.
         train_pf = wrap_prefetcher(train_loader, device)
         test_pf  = wrap_prefetcher(test_loader,  device)
         val_pf   = wrap_prefetcher(val_loader,   device) if val_loader else None
@@ -327,21 +327,25 @@ def build_layers_per_backbone(backbone_names, layers_to_extract_from):
 
 def get_patchcore_list(args, input_shape, feat_sampler,
                        device, gpu_ids, ddp_mode=False):
-    """
-    Buat daftar PatchCore instance.
+    """Build a list of :class:`PatchCore` instances.
 
-    Strategi multi-GPU yang benar untuk PatchCore:
+    Multi-GPU strategy for PatchCore:
 
-    DDP (torchrun):
-        Backbone di-wrap DDP. Setiap proses punya 1 GPU.
+    DDP (``torchrun``):
+        The backbone is wrapped with :class:`DistributedDataParallel`.
+        Each process owns exactly one GPU.
 
-    DataParallel (--gpu 0 1, tanpa torchrun):
-        TIDAK pakai torch.nn.DataParallel — ForwardHook + exception tidak
-        kompatibel dengan cara DP mereplikasi modul.
-        Gantinya: MultiGPUFeatureExtractor di common.py yang secara manual
-        split batch ke tiap GPU via ThreadPoolExecutor, tiap GPU punya
-        NetworkFeatureAggregator + hook sendiri yang independen.
-        gpu_ids diteruskan ke PatchCore.load() dan dipakai di sana.
+    Manual multi-GPU (``--gpu 0 1`` without torchrun):
+        We **do not** use ``torch.nn.DataParallel`` because the
+        ForwardHook + exception-based early-exit pattern is incompatible
+        with the way DataParallel replicates modules.
+
+        Instead, :class:`common.MultiGPUFeatureExtractor` is used. It
+        manually splits the batch across GPUs via a ``ThreadPoolExecutor``;
+        each GPU has its own :class:`NetworkFeatureAggregator` and hooks.
+
+        The list of ``gpu_ids`` is passed down into ``PatchCore.load()``
+        and used there.
     """
     layers_per_backbone = build_layers_per_backbone(
         args.backbone_names, args.layers_to_extract_from
@@ -398,7 +402,7 @@ def get_patchcore_list(args, input_shape, feat_sampler,
 # ---------------------------------------------------------------------------
 
 def gather_features_ddp(local_features: np.ndarray) -> np.ndarray:
-    """Kumpulkan fitur dari semua rank ke rank 0 via all_gather."""
+    """Gather features from all ranks to rank 0 via ``all_gather``."""
     if not is_dist_active() or get_world_size() == 1:
         return local_features
 
@@ -428,12 +432,13 @@ def gather_features_ddp(local_features: np.ndarray) -> np.ndarray:
 
 def _fit_ddp(pc: patchcore.PatchCore,
              training_loader) -> None:
-    """
-    Versi DDP dari pc.fit():
-      1. Tiap rank ekstrak fitur dari slice data miliknya (via DistributedSampler).
-      2. Fitur di-gather dari semua rank.
-      3. Rank 0 jalankan coreset sampling + bangun FAISS index.
-      4. FAISS index di-broadcast ke semua rank.
+    """DDP-aware equivalent of :meth:`PatchCore.fit`.
+
+    1. Each rank extracts features from its own data slice (via
+       :class:`DistributedSampler`).
+    2. Features are gathered from all ranks.
+    3. Rank 0 runs coreset sampling and builds the FAISS index.
+    4. The FAISS index is broadcast to all ranks.
     """
     import tqdm
 
@@ -447,10 +452,10 @@ def _fit_ddp(pc: patchcore.PatchCore,
             if isinstance(image, dict):
                 image = image["image"]
             with torch.no_grad():
-                # Gambar mungkin sudah di GPU karena DataPrefetcher;
-                # pastikan float dan di device yang benar.
+                # Images may already be on the GPU because of DataPrefetcher;
+                # make sure they are float tensors and on the correct device.
                 img = image.to(torch.float).to(pc.device)
-                # _embed mengembalikan np.ndarray [N_patches, target_dim]
+                # ``_embed`` returns an np.ndarray of shape [N_patches, target_dim]
                 local_features.append(pc._embed(img))
 
     local_features = np.concatenate(local_features, axis=0)
@@ -545,7 +550,7 @@ def run(args: argparse.Namespace) -> None:
 
     # DataLoader sudah dibungkus DataPrefetcher di dalam get_dataloaders()
     all_dataloaders = get_dataloaders(args, args.seed, device, ddp_mode=ddp_mode)
-    result_collect  = []
+    # result_collect  = []
 
     for idx, dataloaders in enumerate(all_dataloaders):
         dataset_name = dataloaders["training"].name
@@ -585,155 +590,29 @@ def run(args: argparse.Namespace) -> None:
                     pc.fit(dataloaders["training"])
 
             if is_dist_active():
-                dist.barrier()
-
-            # ── Inference ────────────────────────────────────────────────
-            torch.cuda.empty_cache()
-            labels_gt = None
-            masks_gt = None
-            accum_scores = None
-            accum_segs = None
-            n_ensemble = len(patchcore_list)
-
-            for i, pc in enumerate(patchcore_list):
-                torch.cuda.empty_cache()
-                if is_main_process():
-                    LOGGER.info("Embedding test data (%d/%d)", i + 1, n_ensemble)
-                if is_main_process() or not is_dist_active():
-                    raw_scores, raw_segs, labels_gt_batch, masks_gt_batch = pc.predict(
-                        dataloaders["testing"]
-                    )
-                    # Ground truth is identical across ensemble members;
-                    # fetch only once.
-                    if labels_gt is None:
-                        labels_gt = labels_gt_batch
-                        masks_gt = masks_gt_batch
-
-                    # Streaming ensemble aggregation:
-                    # normalize each member independently, then accumulate.
-                    scores_arr = np.asarray(raw_scores, dtype=np.float64)
-                    s_min, s_max = scores_arr.min(), scores_arr.max()
-                    s_range = s_max - s_min
-                    norm_scores = (
-                        (scores_arr - s_min) / s_range
-                        if s_range > 0
-                        else np.zeros_like(scores_arr)
-                    )
-                    accum_scores = (
-                        norm_scores
-                        if accum_scores is None
-                        else accum_scores + norm_scores
-                    )
-
-                    seg_arr = np.asarray(raw_segs, dtype=np.float64)
-                    flat_arr = seg_arr.reshape(-1)
-                    s_min_s, s_max_s = flat_arr.min(), flat_arr.max()
-                    s_range_s = s_max_s - s_min_s
-                    norm_segs = (
-                        (seg_arr - s_min_s) / s_range_s
-                        if s_range_s > 0
-                        else np.zeros_like(seg_arr)
-                    )
-                    accum_segs = (
-                        norm_segs
-                        if accum_segs is None
-                        else accum_segs + norm_segs
-                    )
-
-                # Clean per-iteration temporaries to free memory early
-                if is_main_process() or not is_dist_active():
-                    del raw_scores, raw_segs, scores_arr, seg_arr, flat_arr
-                    del norm_scores, norm_segs
-
-            if is_dist_active():
+                # Sinkronisasi semua rank sebelum evaluasi & penyimpanan
                 dist.barrier()
 
             if is_main_process() or not is_dist_active():
-                scores = accum_scores / n_ensemble
-                segmentations = accum_segs / n_ensemble
-                # Release the accumulated arrays — no longer needed after division
-                del accum_scores, accum_segs
+                model_dir = _save_patchcore_models(patchcore_list, run_save_path, dataset_name)
 
-                if args.segment:
-                    _save_segmentation_images(
-                        args, dataloaders, run_save_path,
-                        dataset_name, segmentations, scores,
-                    )
-                _save_patchcore_models(patchcore_list, run_save_path, dataset_name)
-
-                LOGGER.info("Computing evaluation metrics.")
-                auroc = metrics.compute_imagewise_retrieval_metrics(
-                    scores, labels_gt
-                )["auroc"]
-                full_pixel_auroc = metrics.compute_pixelwise_retrieval_metrics(
-                    segmentations, masks_gt
-                )["auroc"]
-                anomaly_idxs = [i for i, m in enumerate(masks_gt) if np.sum(m) > 0]
-                # Guard against dataset with zero anomalous masks
-                if anomaly_idxs:
-                    anomaly_pixel_auroc = metrics.compute_pixelwise_retrieval_metrics(
-                        [segmentations[i] for i in anomaly_idxs],
-                        [masks_gt[i] for i in anomaly_idxs],
-                    )["auroc"]
-                else:
-                    anomaly_pixel_auroc = float("nan")
-
-                result = {
-                    "dataset_name":       dataset_name,
-                    "instance_auroc":     auroc,
-                    "full_pixel_auroc":   full_pixel_auroc,
-                    "anomaly_pixel_auroc": anomaly_pixel_auroc,
-                }
-                result_collect.append(result)
-                for key, val in result.items():
-                    if key != "dataset_name":
-                        LOGGER.info("%s: %.3f", key, val)
-
-
-        if is_main_process():
-            LOGGER.info("\n\n-----\n")
-
-    if is_main_process() and result_collect:
-        metric_names  = list(result_collect[-1].keys())[1:]
-        dataset_names = [r["dataset_name"] for r in result_collect]
-        scores_list   = [list(r.values())[1:] for r in result_collect]
-        utils.compute_and_store_final_results(
-            run_save_path, scores_list,
-            column_names=metric_names, row_names=dataset_names,
-        )
-        ml_logs.run_mlflow(args, run_save_path, result_collect)
+                evaluator = PatchCoreEvaluator(
+                    model_dirs=[model_dir],
+                    data_path=args.data_path,
+                    results_path=run_save_path,
+                    batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    resize=args.resize,
+                    imagesize=args.imagesize,
+                    faiss_on_gpu=args.faiss_on_gpu if hasattr(args, "faiss_on_gpu") else True,
+                    faiss_num_workers=args.faiss_num_workers if hasattr(args, "faiss_num_workers") else 8,
+                    device=device,
+                    save_segmentation_images=args.segment if hasattr(args, "segment") else False,
+                )
+                result_collect = evaluator.evaluate()
+                ml_logs.run_mlflow(args, run_save_path, result_collect)
 
     teardown_ddp()
-
-# ---------------------------------------------------------------------------
-# Save helpers
-# ---------------------------------------------------------------------------
-
-def _save_segmentation_images(args, dataloaders, run_save_path,
-                               dataset_name, segmentations, scores):
-    testing_ds  = dataloaders["testing"].dataset
-    image_paths = [x[2] for x in testing_ds.data_to_iterate]
-    mask_paths  = [x[3] for x in testing_ds.data_to_iterate]
-
-    in_std  = np.array(testing_ds.transform_std).reshape(-1, 1, 1)
-    in_mean = np.array(testing_ds.transform_mean).reshape(-1, 1, 1)
-
-    def image_transform(image):
-        # Denormalize: pixel = (normalized * std + mean) * 255
-        img_tensor = testing_ds.transform_img(image).numpy()
-        return np.clip((img_tensor * in_std + in_mean) * 255, 0, 255).astype(np.uint8)
-
-    def mask_transform(mask):
-        return testing_ds.transform_mask(mask).numpy()
-
-    save_path = os.path.join(run_save_path, "segmentation_images", dataset_name)
-    os.makedirs(save_path, exist_ok=True)
-    utils.plot_segmentation_images(
-        save_path, image_paths, segmentations, scores, mask_paths,
-        image_transform=image_transform,
-        mask_transform=mask_transform,
-    )
-
 
 def _save_patchcore_models(patchcore_list, run_save_path, dataset_name):
     save_path = os.path.join(run_save_path, "models", dataset_name)
@@ -742,7 +621,7 @@ def _save_patchcore_models(patchcore_list, run_save_path, dataset_name):
     for i, pc in enumerate(patchcore_list):
         prepend = f"Ensemble-{i + 1}-{n}_" if n > 1 else ""
         pc.save_to_path(save_path, prepend)
-
+    return save_path
 
 # ---------------------------------------------------------------------------
 # Entry point
