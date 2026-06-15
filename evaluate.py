@@ -193,6 +193,7 @@ class PatchCoreEvaluator:
             column_names=metric_names,
             row_names=dataset_names,
         )
+        return result_collect
 
     def _save_segmentation_images(self, results_path: str, dataloaders: dict,
                                  segmentations: np.ndarray, scores: np.ndarray) -> None:
