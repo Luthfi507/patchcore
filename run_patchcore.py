@@ -178,11 +178,6 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--patchsize_aggregate", "-pa", nargs="+", type=int, default=[])
     pc.add_argument("--faiss_on_gpu",      action="store_true")
     pc.add_argument("--faiss_num_workers", type=int, default=8)
-    # --- Memory bank backend & segmentation training flags ---
-    pc.add_argument("--memory_bank_backend", type=str, default="ram", choices=["ram", "disk"],
-                    help="Backend penyimpanan fitur patch training: 'ram' (default, cepat, boros RAM) atau 'disk' (hemat RAM, lambat, cache di .cache/patchcore/)")
-    pc.add_argument("--train_segmentation", action="store_true", default=False,
-                    help="Jika diset, lakukan training & evaluasi segmentasi (pixel-level). Jika tidak, hanya image-level anomaly detection.")
     return p
 
 
@@ -508,6 +503,15 @@ def _broadcast_faiss_index(pc: patchcore.PatchCore) -> None:
 
     dist.barrier()
 
+def _save_args(args: argparse.Namespace, save_path: str) -> None:
+    """Save all arguments to a JSON file."""
+    import json
+    
+    args_dict = vars(args)
+    json_path = os.path.join(save_path, "args.json")
+    
+    with open(json_path, "w") as f:
+        json.dump(args_dict, f, indent=2)
 
 # ---------------------------------------------------------------------------
 # Main pipeline
@@ -536,6 +540,8 @@ def run(args: argparse.Namespace) -> None:
                     "ON (CUDA)" if device.type == "cuda" else "OFF (CPU pass-through)")
     else:
         run_save_path = None
+
+    _save_args(args, run_save_path)
 
     if is_dist_active():
         dist.barrier()
