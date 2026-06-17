@@ -3,9 +3,11 @@ from dotenv import load_dotenv
 import mlflow
 import argparse
 import os
+from datetime import datetime
+import pytz
 import shutil
 from time import time
-from predict import Predictor
+from predict import Wrapper
 
 load_dotenv()
 
@@ -16,27 +18,7 @@ project_dir = os.path.abspath(
 pred_path = os.path.join(project_dir, 'predict.py')
 shutil.rmtree('mlflow_model', True)
 
-class Wrapper(mlflow.pyfunc.PythonModel):
-    def load_context(self, context):
-        model_dir = context.artifacts['model_dir']
-        self.predictor = Predictor(
-            model_dir
-        )
-        print(f"Model loaded from {model_dir}")
-
-    def predict(self, context, model_input):
-        start = time()
-        image_path = model_input['image_path']
-        threshold = model_input['threshold']
-
-        pred = self.predictor.predict_image(
-            image_path,
-            threshold=threshold
-        )
-
-        total_time = time() - start
-        print(f"Image predicted in {total_time:.4f}")
-        return pred
+run_name = str(datetime.now(pytz.utc).astimezone(pytz.timezone('Asia/Jakarta')).strftime("%d-%m-%y:%H-%M-%S-%f"))
 
 def _mlflow_setup(args: argparse.Namespace):
     experiment = "patchcore experiment"
@@ -105,7 +87,7 @@ def run_mlflow(args: argparse.Namespace, run_save_path: str, result_collect: lis
         ]
     }
     
-    with mlflow.start_run():
+    with mlflow.start_run(run_name=run_name):
         logger.info("MLflow run started")
 
         _mlflow_log_params(args)

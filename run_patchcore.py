@@ -606,14 +606,14 @@ def run(args: argparse.Namespace) -> None:
                     model_dirs=[model_dir],
                     data_path=args.data_path,
                     results_path=run_save_path,
-                    batch_size=args.batch_size,
-                    num_workers=args.num_workers,
-                    resize=args.resize,
-                    imagesize=args.imagesize,
-                    faiss_on_gpu=args.faiss_on_gpu if hasattr(args, "faiss_on_gpu") else True,
-                    faiss_num_workers=args.faiss_num_workers if hasattr(args, "faiss_num_workers") else 8,
-                    device=device,
-                    save_segmentation_images=args.segment if hasattr(args, "segment") else False,
+                    # batch_size=args.batch_size,
+                    # num_workers=args.num_workers,
+                    # resize=args.resize,
+                    # imagesize=args.imagesize,
+                    # faiss_on_gpu=args.faiss_on_gpu if hasattr(args, "faiss_on_gpu") else True,
+                    # faiss_num_workers=args.faiss_num_workers if hasattr(args, "faiss_num_workers") else 8,
+                    # device=device,
+                    # save_segmentation_images=args.segment if hasattr(args, "segment") else False,
                 )
                 result_collect = evaluator.evaluate()
                 ml_logs.run_mlflow(args, run_save_path, result_collect)

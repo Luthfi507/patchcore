@@ -3,6 +3,8 @@ import os
 import pickle
 import logging
 from typing import List
+from time import time
+import mlflow
 
 import faiss
 import numpy as np
@@ -439,3 +441,20 @@ class Predictor:
             bool(result["score"] > threshold) if threshold is not None else None
         )
         return result
+    
+class Wrapper(mlflow.pyfunc.PythonModel):
+    def load_context(self, context):
+        model_dir = context.artifacts["model_dir"]
+        self.predictor = Predictor(model_dir)
+        print(f"Model loaded from {model_dir}")
+
+    def predict(self, context, model_input):
+        start = time()
+        image_path = model_input["image_path"]
+        threshold = model_input["threshold"]
+
+        pred = self.predictor.predict_image(image_path, threshold=threshold)
+
+        total_time = time() - start
+        print(f"Image predicted in {total_time:.4f}")
+        return pred
