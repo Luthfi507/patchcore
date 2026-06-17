@@ -1,14 +1,12 @@
 import os
 import gc
-import logging
 import numpy as np
 import torch
 import pickle
+from loguru import logger
 
 from src.patchcore import patchcore, common, metrics, utils
 from src.patchcore.datasets.mvtec import MVTecDataset
-
-LOGGER = logging.getLogger(__name__)
 
 class PatchCoreEvaluator:
     def __init__(
@@ -92,8 +90,6 @@ class PatchCoreEvaluator:
         subdatasets = self._get_subdatasets()
         n_dataloaders = len(subdatasets)
         n_patchcores = len(self.model_dirs)
-        if not (n_dataloaders == n_patchcores or n_patchcores == 1):
-            raise ValueError("Please ensure that #PatchCores == #Datasets or #PatchCores == 1!")
 
         def patchcore_iter():
             for path in self.model_dirs:
@@ -117,10 +113,7 @@ class PatchCoreEvaluator:
 
         for dl_count, dataloaders in enumerate(dl_iter):
             dataset_name = dataloaders["testing"].name
-            LOGGER.info(
-                "Evaluating dataset [%s] (%d/%d)...",
-                dataset_name, dl_count + 1, n_dataloaders,
-            )
+            logger.debug(f"Evaluating dataset {dataset_name} ({dl_count + 1}/{n_dataloaders})...")
             torch.cuda.empty_cache()
 
             if dl_count < n_patchcores:
@@ -132,9 +125,7 @@ class PatchCoreEvaluator:
 
             for i, pc in enumerate(current_patchcore_list):
                 torch.cuda.empty_cache()
-                LOGGER.info(
-                    "Embedding test data (%d/%d)", i + 1, len(current_patchcore_list)
-                )
+                logger.info(f"Embedding test data ({i + 1}/{len(current_patchcore_list)})")
                 scores, segmentations, labels_gt, masks_gt = pc.predict(
                     dataloaders["testing"]
                 )
@@ -152,7 +143,7 @@ class PatchCoreEvaluator:
                 )
 
             # --- Metrics ---
-            LOGGER.info("Computing evaluation metrics.")
+            logger.info("Computing evaluation metrics.")
             auroc = metrics.compute_imagewise_retrieval_metrics(
                 scores, anomaly_labels
             )["auroc"]
@@ -177,12 +168,10 @@ class PatchCoreEvaluator:
 
             for key, val in result.items():
                 if key != "dataset_name":
-                    LOGGER.info("%s: %.3f", key, val)
+                    logger.info(f"{key}: {val:.3f}")
 
             del current_patchcore_list
             gc.collect()
-
-            LOGGER.info("\n\n-----\n")
 
         metric_names = list(result_collect[-1].keys())[1:]
         dataset_names = [r["dataset_name"] for r in result_collect]
@@ -232,15 +221,10 @@ if __name__ == "__main__":
     results_path="results/project"
 
     evaluator = PatchCoreEvaluator(
-        "results/project/models/mvtc_toothbrush/",
-        "mvtec_anomaly_detection/dataset/",
-        results_path,
-        args.batch_size,
-        args.num_workers,
-        args.resize,
-        args.imagesize,
-        args.faiss_on_gpu,
-        args.faiss_num_workers,
+        model_dirs=["results/project/models/mvtc_screen/"],
+        data_path="dataset/",
+        results_path=results_path
     )
     result = evaluator.evaluate()
     run_mlflow(args, results_path, result)
+    print(result)

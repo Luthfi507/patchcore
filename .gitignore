@@ -3,6 +3,7 @@ debugging/
 *.pt
 .vscode/
 mvtec_anomaly_detection/
+dataset/
 results/
 evaluated_results/
 inference_results/
