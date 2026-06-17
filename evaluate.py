@@ -220,9 +220,27 @@ class PatchCoreEvaluator:
         )
 
 if __name__ == "__main__":
+    import json
+    from types import SimpleNamespace
+    from src.helper.ml_logs import run_mlflow
+    arg_path = 'results/project/args.json'
+
+    with open(arg_path) as f:
+        config = json.load(f)
+
+    args = SimpleNamespace(**config)
+    results_path="results/project"
+
     evaluator = PatchCoreEvaluator(
-        model_dirs=["results/project/models/mvtc_toothbrush/"],
-        data_path="mvtec_anomaly_detection/dataset/",
-        results_path="results"
+        "results/project/models/mvtc_toothbrush/",
+        "mvtec_anomaly_detection/dataset/",
+        results_path,
+        args.batch_size,
+        args.num_workers,
+        args.resize,
+        args.imagesize,
+        args.faiss_on_gpu,
+        args.faiss_num_workers,
     )
-    evaluator.evaluate()
+    result = evaluator.evaluate()
+    run_mlflow(args, results_path, result)
