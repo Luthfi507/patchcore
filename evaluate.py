@@ -4,7 +4,10 @@ import numpy as np
 import torch
 import pickle
 from loguru import logger
+import srsly
 
+from src.helper.calibrate import find
+from predict import Predictor
 from src.patchcore import patchcore, common, metrics, utils
 from src.patchcore.datasets.mvtec import MVTecDataset
 
@@ -182,6 +185,12 @@ class PatchCoreEvaluator:
             column_names=metric_names,
             row_names=dataset_names,
         )
+
+        predictor = Predictor(self.model_dirs[0])
+        model = predictor.load_model(self.device)
+        data_dir = os.path.join(self.data_path, 'screen', 'test')
+        result = find(model, os.path.join(data_dir, 'good'), os.path.join(data_dir, 'defective'))
+        srsly.write_json('threshold.json', result)
         return result_collect
 
     def _save_segmentation_images(self, results_path: str, dataloaders: dict,

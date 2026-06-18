@@ -1,5 +1,6 @@
 import math
 import os
+import srsly
 import pickle
 import logging
 from typing import List
@@ -445,13 +446,15 @@ class Predictor:
 class Wrapper(mlflow.pyfunc.PythonModel):
     def load_context(self, context):
         model_dir = context.artifacts["model_dir"]
+        threshold_path = context.artifacts['threshold']
+        self.threshold = srsly.read_json(threshold_path)
         self.predictor = Predictor(model_dir)
-        print(f"Model loaded from {model_dir}")
+        print(f"Model loaded from {model_dir} with default threshold {self.threshold:.4f}")
 
     def predict(self, context, model_input):
         start = time()
         image_path = model_input["image_path"]
-        threshold = model_input["threshold"]
+        threshold = model_input.get('threshold', self.threshold)
 
         pred = self.predictor.predict_image(image_path, threshold=threshold)
 

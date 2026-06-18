@@ -5,19 +5,15 @@ import argparse
 import os
 from datetime import datetime
 import pytz
-import shutil
 from time import time
 from predict import Wrapper
 
 load_dotenv()
 
 file_path = os.path.abspath(__file__)
-project_dir = os.path.abspath(
-    os.path.join(os.path.dirname(file_path), '..', '..')
-)
+project_dir = os.path.abspath(os.path.join(os.path.dirname(file_path), '..', '..'))
 pred_path = os.path.join(project_dir, 'predict.py')
-shutil.rmtree('mlflow_model', True)
-
+threshold_path = os.path.join(project_dir, 'threshold.json')
 run_name = str(datetime.now(pytz.utc).astimezone(pytz.timezone('Asia/Jakarta')).strftime("%d-%m-%y:%H-%M-%S-%f"))
 
 def _mlflow_setup(args: argparse.Namespace):
@@ -103,7 +99,7 @@ def run_mlflow(args: argparse.Namespace, run_save_path: str, result_collect: lis
         mlflow.pyfunc.log_model(
             artifact_path='pyfunc',
             python_model=Wrapper(),
-            artifacts={'model_dir': model_dir},
+            artifacts={'model_dir': model_dir, 'threshold': threshold_path},
             code_path=[pred_path],
             conda_env=conda_env
         )
