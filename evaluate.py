@@ -150,16 +150,20 @@ class PatchCoreEvaluator:
             auroc = metrics.compute_imagewise_retrieval_metrics(
                 scores, anomaly_labels
             )["auroc"]
+            logger.info(f"Computed image-wise AUROC: {auroc:.3f}")
 
             full_pixel_auroc = metrics.compute_pixelwise_retrieval_metrics(
                 segmentations, masks_gt
             )["auroc"]
+            logger.info(f"Computed full-pixel AUROC: {full_pixel_auroc:.3f}")
 
             anomaly_idxs = [i for i, m in enumerate(masks_gt) if np.sum(m) > 0]
+            logger.info(f"Found {len(anomaly_idxs)} anomaly samples for pixel AUROC.")
             anomaly_pixel_auroc = metrics.compute_pixelwise_retrieval_metrics(
                 [segmentations[i] for i in anomaly_idxs],
                 [masks_gt[i] for i in anomaly_idxs],
             )["auroc"]
+            logger.info(f"Computed anomaly-only pixel AUROC: {anomaly_pixel_auroc:.3f}")
 
             result = {
                 "dataset_name": dataset_name,
